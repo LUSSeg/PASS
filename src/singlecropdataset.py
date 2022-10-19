@@ -48,7 +48,6 @@ class EvalDataset(datasets.ImageFolder):
                 prediction[logit < self.threshold] = 0
             logit = torch.from_numpy(logit)
             logit = logit.view(-1)
-            logit = logit[mask]
 
         if self.match is not None:
             predict_matched = np.zeros_like(prediction)
@@ -77,6 +76,8 @@ class EvalDataset(datasets.ImageFolder):
         prediction = prediction[mask]
         boundary_target = boundary_target[mask]
         boundary_prediction = boundary_prediction[mask]
+        if isinstance(logit, torch.Tensor):
+            logit = logit[mask]
 
         return target, boundary_target, prediction, boundary_prediction, logit
 
