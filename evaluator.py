@@ -8,6 +8,7 @@ from tqdm import tqdm
 
 from src.singlecropdataset import EvalDataset
 from src.utils import hungarian
+from src.metric import intersectionAndUnionGPU, fscore, IoUDifferentSizeGPUWithBoundary
 
 NUM_THREADS = 24
 manager = Manager()
@@ -67,36 +68,6 @@ def match(loader, num_classes, threshold):
     return match
 
 
-def intersectionAndUnionGPU(output, target, K):
-    # 'K' classes,
-    # output and target sizes are N or N * L or N * H * W,
-    # each value in range 0 to K - 1.
-    assert output.dim() in [1, 2, 3]
-    assert output.shape == target.shape
-    output = output.view(-1)
-    target = target.view(-1)
-    intersection = output[output == target]
-    area_intersection = torch.histc(intersection, bins=K, min=0, max=K - 1)
-    area_output = torch.histc(output, bins=K, min=0, max=K - 1)
-    area_target = torch.histc(target, bins=K, min=0, max=K - 1)
-    return area_intersection, area_output, area_target
-
-
-def fscore(predict, target):
-    target[target > 0] = 1
-    predict[predict > 0] = 1
-
-    t = torch.sum(target)
-    p = torch.sum(predict)
-    tp = torch.sum(target * predict).float()
-    recall = tp / (t + 1e-20)
-    precision = tp / (p + 1e-20)
-    f_score = (1 + 0.3) * precision * recall / (0.3 * precision + recall +
-                                                1e-20)
-
-    return f_score
-
-
 def evaluator(loader, num_classes, thresholds, matches):
     assert thresholds is not None
     if isinstance(thresholds, float):
@@ -114,6 +85,17 @@ def evaluator(loader, num_classes, thresholds, matches):
         FMeasure = 0.0
         ACC = 0.0
 
+        # mIoUs under different object sizes
+        Ts = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        Ps = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        TPs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        mIoUs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        # bIoUs under different object sizes
+        BTs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        BPs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        BTPs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        mBIoUs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+
         loader.dataset.threshold = t
         loader.dataset.match = matches[t]
         for target, boundary_target, predict, boundary_predict, _ in tqdm(loader):
@@ -129,6 +111,8 @@ def evaluator(loader, num_classes, thresholds, matches):
             area_intersection_boundary, area_output_boundary, area_target_boundary = \
                 intersectionAndUnionGPU(
                     boundary_predict.view(-1), boundary_target.view(-1), num_classes + 2)
+            
+            IoUDifferentSizeGPUWithBoundary(predict.view(-1), target.view(-1), boundary_predict.view(-1), boundary_target.view(-1), num_classes + 1, Ts, Ps, TPs, BTs, BPs, BTPs)
 
             f_score = fscore(predict, target)
 
@@ -147,11 +131,17 @@ def evaluator(loader, num_classes, thresholds, matches):
         BIoU = BTP / (BT + BP - BTP + 1e-10)
         mIoU = torch.mean(IoU).item() * 100
         mBIoU = torch.mean(BIoU).item() * 100
-        FMeasure = FMeasure.item() / len(loader.dataset)
+        FMeasure = FMeasure.item() / len(loader.dataset) * 100
         ACC = ACC.item() * 100 / len(loader.dataset)
 
-        print('Threshold: {:.2f}\tAcc: {:.4f}\tmIoU: {:.4f}\tmBIoU: {:.4f}\tFMeasure: {:.4f}'.
-              format(t, ACC, mIoU, mBIoU, FMeasure))
+        for i in range(4): mIoUs[i] = torch.mean((TPs[i] / (Ts[i] + Ps[i] - TPs[i] + 1e-10))[Ps[i] > 0]).item() * 100
+        for i in range(4): mBIoUs[i] = torch.mean((BTPs[i] / (BTs[i] + BPs[i] - BTPs[i] + 1e-10))[BPs[i] > 0]).item() * 100
+
+        print(
+            'Threshold: {:.2f}\tAcc: {:.2f}\tmIoU: {:.2f}\tmBIoU: {:.2f}\tFMeasure: {:.2f}\t'\
+            'S: {:.2f}\tMS: {:.2f}\tML: {:.2f}\tL: {:.2f}\tBS: {:.2f}\tBMS: {:.2f}\tBML: {:.2f}\tBL: {:.2f}'.
+            format(t, ACC, mIoU, mBIoU, FMeasure, mIoUs[0], mIoUs[1], mIoUs[2], mIoUs[3], mBIoUs[0], mBIoUs[1], mBIoUs[2], mBIoUs[3])
+        )
 
         log = dict(th=t,
                    match=matches[t],
@@ -159,7 +149,16 @@ def evaluator(loader, num_classes, thresholds, matches):
                    mIoU=mIoU,
                    mBIoU=mBIoU,
                    IoUs=IoU * 100,
-                   FMeasure=FMeasure)
+                   FMeasure=FMeasure,
+                   S=mIoUs[0],
+                   MS=mIoUs[1],
+                   ML=mIoUs[2],
+                   L=mIoUs[3],
+                   BS=mBIoUs[0],
+                   BMS=mBIoUs[1],
+                   BML=mBIoUs[2],
+                   BL=mBIoUs[3])
+
         logs.append(log)
 
     mious = [log['mIoU'] for log in logs]

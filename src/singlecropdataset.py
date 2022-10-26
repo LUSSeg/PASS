@@ -61,10 +61,10 @@ class EvalDataset(datasets.ImageFolder):
         boundary_target = self.get_boundary_mask(target + 1)
         boundary_prediction = self.get_boundary_mask(prediction + 1)
 
-        target = torch.from_numpy(target.astype(np.float))
-        prediction = torch.from_numpy(prediction.astype(np.float))
-        boundary_target = torch.from_numpy(boundary_target.astype(np.float))
-        boundary_prediction = torch.from_numpy(boundary_prediction.astype(np.float))
+        target = torch.from_numpy(target.astype(np.float32))
+        prediction = torch.from_numpy(prediction.astype(np.float32))
+        boundary_target = torch.from_numpy(boundary_target.astype(np.float32))
+        boundary_prediction = torch.from_numpy(boundary_prediction.astype(np.float32))
 
         target = target.view(-1)
         prediction = prediction.view(-1)
