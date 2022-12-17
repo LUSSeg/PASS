@@ -11,22 +11,14 @@ import time
 from logging import getLogger
 
 import numpy as np
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.nn.parallel
-import torch.backends.cudnn as cudnn
-import torch.distributed as dist
-import torch.optim
-import apex
-from apex.parallel.LARC import LARC
+import jittor as jt
+jt.flags.use_cuda = 1
 
 from src.utils import (
     initialize_exp,
     restart_from_checkpoint,
     fix_random_seeds,
     AverageMeter,
-    init_distributed_mode,
     distributed_sinkhorn
 )
 from src.multicropdataset import MultiCropDatasetGrid
@@ -40,7 +32,6 @@ parser = getOption()
 def main():
     global args
     args = parser.parse_args()
-    init_distributed_mode(args)
     fix_random_seeds(args.seed)
     logger, training_stats = initialize_exp(args, "epoch", "loss")
 
@@ -53,14 +44,11 @@ def main():
         args.max_scale_crops,
         grid_size=7
     )
-    sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
-        sampler=sampler,
+    train_loader = train_dataset.set_attrs(
         batch_size=args.batch_size,
         num_workers=args.workers,
-        pin_memory=True,
-        drop_last=True
+        drop_last=True,
+        shuffle=True
     )
     logger.info("Building data done with {} images loaded.".format(len(train_dataset)))
 
@@ -73,28 +61,22 @@ def main():
         train_mode='pretrain',
         shallow=args.shallow
     )
-    # synchronize batch norm layers
-    if args.sync_bn == "pytorch":
-        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    elif args.sync_bn == "apex":
-        # with apex syncbn we sync bn per group because it speeds up computation
-        # compared to global syncbn
-        process_group = apex.parallel.create_syncbn_process_group(args.syncbn_process_group_size)
-        model = apex.parallel.convert_syncbn_model(model, process_group=process_group)
+    if jt.in_mpi:
+        for n, p in model.named_parameters():
+            p.assign(p.mpi_broadcast())
+
     # copy model to GPU
-    model = model.cuda()
-    if args.rank == 0:
+    if jt.rank == 0:
         logger.info(model)
     logger.info("Building model done.")
 
     # build optimizer
-    optimizer = torch.optim.SGD(
+    optimizer = jt.optim.SGD(
         model.parameters(),
         lr=args.base_lr,
         momentum=0.9,
         weight_decay=args.wd,
     )
-    optimizer = LARC(optimizer=optimizer, trust_coefficient=0.001, clip=False)
     warmup_lr_schedule = np.linspace(args.start_warmup, args.base_lr, len(train_loader) * args.warmup_epochs)
     iters = np.arange(len(train_loader) * (args.epochs - args.warmup_epochs))
     cosine_lr_schedule = np.array([args.final_lr + 0.5 * (args.base_lr - args.final_lr) * (1 + \
@@ -102,78 +84,62 @@ def main():
     lr_schedule = np.concatenate((warmup_lr_schedule, cosine_lr_schedule))
     logger.info("Building optimizer done.")
 
-    # init mixed precision
-    if args.use_fp16:
-        model, optimizer = apex.amp.initialize(model, optimizer, opt_level="O1")
-        logger.info("Initializing mixed precision done.")
-
-    # wrap model
-    model = nn.parallel.DistributedDataParallel(
-        model,
-        device_ids=[args.gpu_to_work_on]
-    )
-
     # optionally resume from a checkpoint
     to_restore = {"epoch": 0}
     restart_from_checkpoint(
         os.path.join(args.dump_path, "checkpoint.pth.tar"),
         run_variables=to_restore,
         state_dict=model,
-        optimizer=optimizer,
-        amp=apex.amp,
+        optimizer=optimizer
     )
     start_epoch = to_restore["epoch"]
 
     # build the queue
     queue = None
-    queue_path = os.path.join(args.dump_path, "queue" + str(args.rank) + ".pth")
+    queue_path = os.path.join(args.dump_path, "queue" + str(jt.rank) + ".pth.tar")
     if os.path.isfile(queue_path):
-        queue = torch.load(queue_path)["queue"]
+        queue = jt.load(queue_path)["queue"]
     # the queue needs to be divisible by the batch size
-    args.queue_length -= args.queue_length % (args.batch_size * args.world_size)
-
-    cudnn.benchmark = True
+    args.queue_length -= args.queue_length % (args.batch_size * jt.world_size)
 
     for epoch in range(start_epoch, args.epochs):
 
         # train the network for one epoch
         logger.info("============ Starting epoch %i ... ============" % epoch)
 
-        # set sampler
-        train_loader.sampler.set_epoch(epoch)
-
         # optionally starts a queue
         if args.queue_length > 0 and epoch >= args.epoch_queue_starts and queue is None:
-            queue = torch.zeros(
-                len(args.crops_for_assign),
-                args.queue_length // args.world_size,
-                args.feat_dim,
-            ).cuda()
+            queue = jt.zeros(
+                (
+                    len(args.crops_for_assign),
+                    args.queue_length // jt.world_size,
+                    args.feat_dim
+                )
+            )
 
         # train the network
         scores, queue = train(train_loader, model, optimizer, epoch, lr_schedule, queue)
         training_stats.update(scores)
 
         # save checkpoints
-        if args.rank == 0:
+        if jt.rank == 0:
             save_dict = {
                 "epoch": epoch + 1,
                 "state_dict": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
             }
-            if args.use_fp16:
-                save_dict["amp"] = apex.amp.state_dict()
-            torch.save(
+            jt.save(
                 save_dict,
                 os.path.join(args.dump_path, "checkpoint.pth.tar"),
             )
             if epoch % args.checkpoint_freq == 0 or epoch == args.epochs - 1:
                 shutil.copyfile(
                     os.path.join(args.dump_path, "checkpoint.pth.tar"),
-                    os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth"),
+                    os.path.join(args.dump_checkpoints, "ckp-" + str(epoch) + ".pth.tar"),
                 )
         if queue is not None:
-            torch.save({"queue": queue}, queue_path)
+            jt.save({"queue": queue}, queue_path)
+        jt.sync_all()
 
 
 def train(train_loader, model, optimizer, epoch, lr_schedule, queue):
@@ -197,10 +163,9 @@ def train(train_loader, model, optimizer, epoch, lr_schedule, queue):
             param_group["lr"] = lr_schedule[iteration]
 
         # normalize the prototypes
-        with torch.no_grad():
-            w = model.module.prototypes.weight.data.clone()
-            w = nn.functional.normalize(w, dim=1, p=2)
-            model.module.prototypes.weight.copy_(w)
+        with jt.no_grad():
+            model.prototypes.weight.assign(
+                model.prototypes.weight.normalize(dim=1, p=2))
 
         # ============ multi-res forward passes ... ============
         (
@@ -225,32 +190,29 @@ def train(train_loader, model, optimizer, epoch, lr_schedule, queue):
             output_deep_pixels,
             embedding_deep_pixel,
         )
-        loss = torch.sum(
-            torch.stack(
+        loss = jt.sum(
+            jt.stack(
                 [loss_i2i * args.weights[0]] + \
                 [x * args.weights[1 + i] for i, x in enumerate(loss_d2s)], dim=0)) / sum(args.weights) + loss_p2p
-        
+
         # ============ backward and optim step ... ============
-        optimizer.zero_grad()
-        if args.use_fp16:
-            with apex.amp.scale_loss(loss, optimizer) as scaled_loss:
-                scaled_loss.backward()
-        else:
-            loss.backward()
-        # cancel gradients for the prototypes
-        if iteration < args.freeze_prototypes_niters:
-            for name, p in model.named_parameters():
-                if "prototypes" in name:
-                    p.grad = None
-        optimizer.step()
+        for name, param in model.named_parameters():
+            if "prototypes" in name:
+                if iteration >= args.freeze_prototypes_niters:
+                    param.start_grad()
+                    assert not param.is_stop_grad()
+                else:
+                    param.stop_grad()
+                    assert param.is_stop_grad()
+        optimizer.step(loss)
 
         # ============ misc ... ============
         losses.update(loss_i2i.item(), inputs[0].size(0))
         losses_p2p.update(loss_p2p.item(), inputs[0].size(0))
-        losses_d2s.update(torch.mean(torch.stack(loss_d2s, dim=0)).item(), inputs[0].size(0))
+        losses_d2s.update(jt.mean(jt.stack(loss_d2s, dim=0)).item(), inputs[0].size(0))
         batch_time.update(time.time() - end)
         end = time.time()
-        if args.rank ==0 and it % 50 == 0:
+        if jt.rank == 0 and it % 50 == 0:
             logger.info(
                 "Epoch: [{0}][{1}]\t"
                 "Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t"
@@ -266,7 +228,7 @@ def train(train_loader, model, optimizer, epoch, lr_schedule, queue):
                     loss=losses,
                     loss_p2p=losses_p2p,
                     loss_d2s=losses_d2s,
-                    lr=optimizer.optim.param_groups[0]["lr"],
+                    lr=optimizer.param_groups[0]["lr"],
                 )
             )
     return (epoch, losses.avg), queue
@@ -278,16 +240,16 @@ def swav_loss(args, model, embedding, output, queue, use_the_queue, bs):
     # ============ swav loss ... ============
     loss = 0
     for i, crop_id in enumerate(args.crops_for_assign):
-        with torch.no_grad():
+        with jt.no_grad():
             out = output[bs * crop_id : bs * (crop_id + 1)].detach()
 
             # time to use the queue
             if queue is not None:
-                if use_the_queue or not torch.all(queue[i, -1, :] == 0):
+                if use_the_queue or not jt.all(queue[i, -1, :] == 0):
                     use_the_queue = True
-                    out = torch.cat(
+                    out = jt.concat(
                         (
-                            torch.mm(queue[i], model.module.prototypes.weight.t()),
+                            jt.matmul(queue[i], model.prototypes.weight.t()),
                             out,
                         )
                     )
@@ -303,7 +265,7 @@ def swav_loss(args, model, embedding, output, queue, use_the_queue, bs):
         subloss = 0
         for v in np.delete(np.arange(np.sum(args.nmb_crops)), crop_id):
             x = output[bs * v : bs * (v + 1)] / args.temperature
-            subloss -= torch.mean(torch.sum(q * F.log_softmax(x, dim=1), dim=1))
+            subloss -= jt.mean(jt.sum(q * jt.nn.log_softmax(x, dim=1), dim=1))
         loss += subloss / (np.sum(args.nmb_crops) - 1)
     loss /= len(args.crops_for_assign)
     return loss, labels, queue, use_the_queue
@@ -311,7 +273,7 @@ def swav_loss(args, model, embedding, output, queue, use_the_queue, bs):
 
 def d2s_loss(args, output, labels, bs, shallow=None):
     if shallow is None:
-        return torch.FloatTensor([0]).to(output.device)
+        return jt.float32([0])
 
     # alignment from deep to shallow
     losses_shallow = []
@@ -329,7 +291,7 @@ def d2s_loss(args, output, labels, bs, shallow=None):
                     crop_id,
                 ):
                     x = output[bs * v : bs * (v + 1)] / args.temperature
-                    subloss -= torch.mean(torch.sum(q * F.log_softmax(x, dim=1), dim=1))
+                    subloss -= jt.mean(jt.sum(q * jt.nn.log_softmax(x, dim=1), dim=1))
                 loss_shallow += subloss
             loss_shallow /= len(args.crops_for_assign)
             losses_shallow.append(loss_shallow)
@@ -339,12 +301,16 @@ def d2s_loss(args, output, labels, bs, shallow=None):
 
 def p2p_loss(args, output_pixel, embedding_pixel):
     n, c, h, w = embedding_pixel.shape
-    criterion = nn.CosineSimilarity(dim=1).cuda()
+    embedding_pixel = embedding_pixel.view(n, c, h * w).permute(0, 2, 1)
+    output_pixel = output_pixel.view(n, c, h * w).permute(0, 2, 1)
     z1, z2 = embedding_pixel.split(n // 2, dim=0)
     p1, p2 = output_pixel.split(n // 2, dim=0)
-    loss = (
-        -(criterion(p1, z2.detach()).mean() + criterion(p2, z1.detach()).mean()) * 0.5
-    )
+
+    z1 = jt.normalize(z1, p=2, dim=-1) # [B HW C]
+    z2 = jt.normalize(z2, p=2, dim=-1)
+    p1 = jt.normalize(p1, p=2, dim=-1)
+    p2 = jt.normalize(p2, p=2, dim=-1)
+    loss = -((p1 * z2.detach()).sum(dim=-1).mean() + (p2 * z1.detach()).sum(dim=-1).mean()) * 0.5
     return loss
 
 

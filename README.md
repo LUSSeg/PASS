@@ -1,5 +1,6 @@
 # PASS method for LUSS task
 
+[PyTorch Code](https://github.com/LUSSeg/PASS)
 
 ## Introduction
 ![image](https://user-images.githubusercontent.com/20515144/196449430-5ac6a88c-24ea-4a82-8a45-cd244aeb0b3b.png)
@@ -30,74 +31,36 @@ We give the training and inference details in **[USAGE](USAGE.md)**.
 <tr>
 <td align="left">ImageNet-S</td>
 <td align="center">ResNet50</td>
-<td align="center">11.5</td>
-<td align="center">11.0</td>
-<td align="center"><a href="scripts/luss919_pass.sh">bash</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass919_pretrained.pth.tar">model</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass919_pixelatt.pth.tar">model</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass919_centroids.npy">centroid</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass919_finetuning.pth.tar">model</a></td>
+<td align="center">11.4</td>
+<td align="center">10.3</td>
+<td align="center"><a href="scripts/luss919_pass_jt.sh">bash</a></td>
+<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">centroid</a></td>
+<td align="center"><a href="">model</a></td>
 </tr>
 <td align="left">ImageNet-S 300</td>
 <td align="center">ResNet50</td>
-<td align="center">18.0</td>
-<td align="center">18.1</td>
-<td align="center"><a href="scripts/luss300_pass.sh">bash</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass300_pretrained.pth.tar">model</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass300_pixelatt.pth.tar">model</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass300_centroids.npy">centroid</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass300_finetuning.pth.tar">model</a></td>
+<td align="center">17.8</td>
+<td align="center">17.4</td>
+<td align="center"><a href="scripts/luss300_pass_jt.sh">bash</a></td>
+<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">centroid</a></td>
+<td align="center"><a href="">model</a></td>
 </tr>
 </tr>
 <td align="left">ImageNet-S 50</td>
-<td align="center">ResNet18</td>
+<td align="center">ResNet50</td>
 <td align="center">29.2</td>
-<td align="center">29.3</td>
-<td align="center"><a href="scripts/luss50_pass.sh">bash</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass50_pretrained.pth.tar">model</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass50_pixelatt.pth.tar">model</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass50_centroids.npy">centroid</a></td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass50_finetuning.pth.tar">model</a></td>
+<td align="center">29.8</td>
+<td align="center"><a href="scripts/luss50_pass_jt.sh">bash</a></td>
+<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">centroid</a></td>
+<td align="center"><a href="">model</a></td>
 </tr>
 </tbody></table>
-
-**Distance Matching Evaluation Protocol**
-<table><tbody>
-<!-- START TABLE -->
-<!-- TABLE HEADER -->
-<th valign="bottom">Dataset</th>
-<th valign="bottom">Arch</th>
-<th valign="bottom">Val</th>
-<th valign="bottom">Test</th>
-<th valign="bottom">Pretrained</th>
-<!-- TABLE BODY -->
-</tr>
-<td align="left">ImageNet-S</td>
-<td align="center">ResNet50</td>
-<td align="center">15.6</td>
-<td align="center">15.6</td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass919_pretrained.pth.tar">model</a></td>
-</tr>
-</tr>
-<td align="left">ImageNet-S 300</td>
-<td align="center">ResNet50</td>
-<td align="center">25.1</td>
-<td align="center">25.2</td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass300_pretrained.pth.tar">model</a></td>
-</tr>
-</tr>
-<td align="left">ImageNet-S 50</td>
-<td align="center">ResNet18</td>
-<td align="center">39.6</td>
-<td align="center">40.4</td>
-<td align="center"><a href="https://github.com/LUSSeg/PASS/releases/download/pass/pass50_pretrained.pth.tar">model</a></td>
-</tr>
-</tbody></table>
-
-**Semi-supervised Evaluation Protocol**
-
-We provide a new codebase for semi-supervised evaluation in [ImageNetSegModel](https://github.com/LUSSeg/ImageNetSegModel).
-
 
 ## Citation
 ```

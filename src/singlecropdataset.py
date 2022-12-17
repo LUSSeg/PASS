@@ -1,9 +1,9 @@
 import os
-import torch
-import torch.nn.functional as F
+import jittor as jt
+import jittor.nn as nn
 import numpy as np
 from PIL import Image
-import torchvision.datasets as datasets
+import jittor.dataset as datasets
 from src.utils import get_mask_of_class, mask_to_boundary
 
 
@@ -24,6 +24,10 @@ class EvalDataset(datasets.ImageFolder):
             self.target_lst.append(path)
             self.prediction_lst.append(os.path.join(prediction_root, categroy, name))
             self.logit_lst.append(os.path.join(prediction_root, categroy, name[:-4] + ".npy"))
+    
+    def _set_threshold_match(self, threshold, match):
+        self.threshold = threshold
+        self.match = match
 
     def __getitem__(self, item):
         """
@@ -46,7 +50,7 @@ class EvalDataset(datasets.ImageFolder):
 
             if self.threshold is not None:
                 prediction[logit < self.threshold] = 0
-            logit = torch.from_numpy(logit)
+            logit = jt.array(logit)
             logit = logit.view(-1)
 
         if self.match is not None:
@@ -61,10 +65,10 @@ class EvalDataset(datasets.ImageFolder):
         boundary_target = self.get_boundary_mask(target + 1)
         boundary_prediction = self.get_boundary_mask(prediction + 1)
 
-        target = torch.from_numpy(target.astype(np.float32))
-        prediction = torch.from_numpy(prediction.astype(np.float32))
-        boundary_target = torch.from_numpy(boundary_target.astype(np.float32))
-        boundary_prediction = torch.from_numpy(boundary_prediction.astype(np.float32))
+        target = jt.float32(target.astype(np.float32))
+        prediction = jt.array(prediction.astype(np.float32))
+        boundary_target = jt.array(boundary_target.astype(np.float32))
+        boundary_prediction = jt.array(boundary_prediction.astype(np.float32))
 
         target = target.view(-1)
         prediction = prediction.view(-1)
@@ -76,7 +80,7 @@ class EvalDataset(datasets.ImageFolder):
         prediction = prediction[mask]
         boundary_target = boundary_target[mask]
         boundary_prediction = boundary_prediction[mask]
-        if isinstance(logit, torch.Tensor):
+        if isinstance(logit, jt.Var):
             logit = logit[mask]
 
         return target, boundary_target, prediction, boundary_prediction, logit
@@ -114,19 +118,15 @@ class ClusterImageFolder(datasets.ImageFolder):
 
 class InferImageFolder(datasets.ImageFolder):
     """Dataset for the inference stage."""
-    def __init__(self, root, transform, rank=0, num_gpus=1):
+    def __init__(self, root, transform, num_gpus=1):
         super().__init__(root, transform=transform)
 
-        self.rank = rank
-        self.num_gpus = num_gpus
-        start = rank * (len(self.samples) // num_gpus)
-        end = (rank + 1) * (len(self.samples) // num_gpus)
-        self.total_len = len(self.samples)
-        if rank + 1 == num_gpus:
-            end = len(self.samples)
-        self.imgs = self.imgs[start: end]
-        self.samples = self.samples[start: end]
-
+        if len(self.imgs) % num_gpus != 0:
+            padding = num_gpus - len(self.imgs) % num_gpus
+            for i in range(padding):
+                self.imgs.append(self.imgs[i])
+            self.total_len = len(self.imgs)
+        
     def __getitem__(self, index):
         """
         Returns:
@@ -136,7 +136,7 @@ class InferImageFolder(datasets.ImageFolder):
         width (int): The width of an image.
         """
         path = self.imgs[index][0]
-        img = self.loader(path)
+        img = Image.open(path).convert('RGB')
         height, width = img.size[1], img.size[0]
 
         if self.transform is not None:
@@ -161,12 +161,12 @@ class PseudoLabelDataset(datasets.ImageFolder):
         img (Tensor): The loaded image. (3 x H x W)
         pseudo (str): The generated pseudo label. (H x W)
         """
-        path, _ = self.samples[index]
+        path, _ = self.imgs[index]
 
-        img = self.loader(path)
+        img = Image.open(path).convert('RGB')
         pseudo = self.load_semantic(path)
-        pseudo = torch.from_numpy(np.array(pseudo)).permute(2, 0, 1).unsqueeze(0)
-        pseudo = F.interpolate(pseudo.float(), (img.size[1], img.size[0]), mode="nearest").squeeze()
+        pseudo = jt.array(np.array(pseudo)).permute(2, 0, 1).unsqueeze(0)
+        pseudo = nn.interpolate(pseudo.float(), (img.size[1], img.size[0]), mode="nearest").squeeze(0)
         pseudo = Image.fromarray(pseudo.permute(1, 2, 0).cpu().numpy().astype(np.uint8))
         img, pseudo = self.transform(img, pseudo)
 
@@ -176,6 +176,6 @@ class PseudoLabelDataset(datasets.ImageFolder):
         cate, name = path.split('/')[-2:]
         name = name.replace("JPEG", "png")
         path = os.path.join(self.pseudo_path, cate, name)
-        semantic = Image.open(path)
+        semantic = Image.open(path).convert('RGB')
 
         return semantic

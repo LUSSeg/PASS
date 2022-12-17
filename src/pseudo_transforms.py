@@ -1,46 +1,37 @@
-import numpy as np
-import torch
 import math
 import random
 from PIL import Image
 import warnings
-from torchvision.transforms import functional as F
-
-
-_pil_interpolation_to_str = {
-    Image.NEAREST: 'PIL.Image.NEAREST',
-    Image.BILINEAR: 'PIL.Image.BILINEAR',
-    Image.BICUBIC: 'PIL.Image.BICUBIC',
-    Image.LANCZOS: 'PIL.Image.LANCZOS',
-    Image.HAMMING: 'PIL.Image.HAMMING',
-    Image.BOX: 'PIL.Image.BOX',
-}
-
-
-def _get_image_size(img):
-    if F._is_pil_image(img):
-        return img.size
-    elif isinstance(img, torch.Tensor) and img.dim() > 2:
-        return img.shape[-2:][::-1]
-    else:
-        raise TypeError("Unexpected type {}".format(type(img)))
+import jittor as jt
+from jittor.transform import to_tensor, to_pil_image, _get_image_size
+import jittor.transform.function_pil as F_pil
+import numpy as np
 
 
 class Compose(object):
-    """Composes several transforms together.
-    Args:
-        transforms (list of ``Transform`` objects): list of transforms to compose.
-    Example:
-        >>> transforms.Compose([
-        >>>     transforms.CenterCrop(10),
-        >>>     transforms.ToTensor(),
-        >>> ])
-    """
+    '''
+    Base class for combining various transformations.
 
+    Args::
+
+    [in] transforms(list): a list of transform.
+
+    Example::
+
+        transform = transform.Compose([
+            transform.Resize(opt.img_size),
+            transform.Gray(),
+            transform.ImageNormalize(mean=[0.5], std=[0.5]),
+        ])
+        img_ = transform(img)
+    '''
     def __init__(self, transforms):
         self.transforms = transforms
 
-    def __call__(self, img, semantic):
+    def __call__(self, *data):
+        assert len(data) == 2
+        img, semantic = data
+
         for t in self.transforms:
             if 'RandomResizedCropSemantic' in t.__class__.__name__:
                 img, semantic = t(img, semantic)
@@ -52,45 +43,41 @@ class Compose(object):
                 img = t(img)
         return img, semantic
 
-    def __repr__(self):
-        format_string = self.__class__.__name__ + '('
-        for t in self.transforms:
-            format_string += '\n'
-            format_string += '    {0}'.format(t)
-        format_string += '\n)'
-        return format_string
-
 
 class RandomHorizontalFlipSemantic(object):
-    """Horizontally flip the given PIL Image randomly with a given probability.
-    Args:
-        p (float): probability of the image being flipped. Default value is 0.5
     """
+    Random flip the image horizontally.
 
+    Args::
+
+        [in] p(float): The probability of image flip, default: 0.5.
+
+    Example::
+
+        transform = transform.RandomHorizontalFlip(0.6)
+        img_ = transform(img)
+    """
     def __init__(self, p=0.5):
         self.p = p
 
-    def __call__(self, img, semantic):
-        """
-        Args:
-            img (PIL Image): Image to be flipped.
-        Returns:
-            PIL Image: Randomly flipped image.
-        """
+    def __call__(self, img:Image.Image, semantic:Image.Image):
+        if not isinstance(img, Image.Image):
+            img = to_pil_image(img)
+        if not isinstance(semantic, Image.Image):
+            semantic = to_pil_image(semantic)
         if random.random() < self.p:
-            return F.hflip(img), F.hflip(semantic)
+            return img.transpose(Image.FLIP_LEFT_RIGHT), semantic.transpose(Image.FLIP_LEFT_RIGHT)
         return img, semantic
-
-    def __repr__(self):
-        return self.__class__.__name__ + '(p={})'.format(self.p)
 
 
 class RandomResizedCropSemantic(object):
     """Crop the given PIL Image to random size and aspect ratio.
+
     A crop of random size (default: of 0.08 to 1.0) of the original size and a random
     aspect ratio (default: of 3/4 to 4/3) of the original aspect ratio is made. This crop
     is finally resized to given size.
     This is popularly used to train the Inception networks.
+
     Args:
         size: expected output size of each edge
         scale: range of size of the origin size cropped
@@ -99,7 +86,7 @@ class RandomResizedCropSemantic(object):
     """
 
     def __init__(self, size, scale=(0.08, 1.0), ratio=(3. / 4., 4. / 3.), interpolation=Image.BILINEAR):
-        if isinstance(size, (tuple, list)):
+        if isinstance(size, tuple):
             self.size = size
         else:
             self.size = (size, size)
@@ -113,10 +100,12 @@ class RandomResizedCropSemantic(object):
     @staticmethod
     def get_params(img, scale, ratio):
         """Get parameters for ``crop`` for a random sized crop.
+
         Args:
             img (PIL Image): Image to be cropped.
             scale (tuple): range of size of the origin size cropped
             ratio (tuple): range of aspect ratio of the origin aspect ratio cropped
+
         Returns:
             tuple: params (i, j, h, w) to be passed to ``crop`` for a random
                 sized crop.
@@ -156,15 +145,20 @@ class RandomResizedCropSemantic(object):
         """
         Args:
             img (PIL Image): Image to be cropped and resized.
+
         Returns:
             PIL Image: Randomly cropped and resized image.
         """
+        if not isinstance(img, Image.Image):
+            img = to_pil_image(img)
+        if not isinstance(semantic, Image.Image):
+            semantic = to_pil_image(semantic)
         i, j, h, w = self.get_params(img, self.scale, self.ratio)
-        return F.resized_crop(img, i, j, h, w, self.size, self.interpolation), \
-               F.resized_crop(semantic, i, j, h, w, self.size, Image.NEAREST)
+        return F_pil.resized_crop(img, i, j, h, w, self.size, self.interpolation), \
+               F_pil.resized_crop(semantic, i, j, h, w, self.size, Image.NEAREST)
 
     def __repr__(self):
-        interpolate_str = _pil_interpolation_to_str[self.interpolation]
+        interpolate_str = str(self.interpolation)
         format_string = self.__class__.__name__ + '(size={0}'.format(self.size)
         format_string += ', scale={0}'.format(tuple(round(s, 4) for s in self.scale))
         format_string += ', ratio={0}'.format(tuple(round(r, 4) for r in self.ratio))
@@ -172,15 +166,7 @@ class RandomResizedCropSemantic(object):
         return format_string
 
 
-class ToTensorSemantic(object):
-    """Convert a ``PIL Image`` or ``numpy.ndarray`` to tensor.
-    Converts a PIL Image or numpy.ndarray (H x W x C) in the range
-    [0, 255] to a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0]
-    if the PIL Image belongs to one of the modes (L, LA, P, I, F, RGB, YCbCr, RGBA, CMYK, 1)
-    or if the numpy.ndarray has dtype = np.uint8
-    In the other cases, tensors are returned without scaling.
-    """
-
+class ToTensorSemantic:
     def __call__(self, pic, semantic):
         """
         Args:
@@ -188,8 +174,8 @@ class ToTensorSemantic(object):
         Returns:
             Tensor: Converted image.
         """
-        semantic = np.asarray(semantic).astype(np.float)
-        return F.to_tensor(pic), F.to_tensor(semantic)
+        semantic = jt.array(np.asarray(semantic).astype(np.float32)).transpose(2, 0, 1)
+        return to_tensor(pic), semantic
 
     def __repr__(self):
         return self.__class__.__name__ + '()'

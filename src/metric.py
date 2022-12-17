@@ -1,19 +1,19 @@
-import torch
 import math
+import numpy as np
 
 
 def intersectionAndUnionGPU(output, target, K):
     # 'K' classes,
     # output and target sizes are N or N * L or N * H * W,
     # each value in range 0 to K - 1.
-    assert output.dim() in [1, 2, 3]
+    assert output.ndim in [1, 2, 3]
     assert output.shape == target.shape
-    output = output.view(-1)
-    target = target.view(-1)
+    output = output.reshape(-1)
+    target = target.reshape(-1)
     intersection = output[output == target]
-    area_intersection = torch.histc(intersection, bins=K, min=0, max=K - 1)
-    area_output = torch.histc(output, bins=K, min=0, max=K - 1)
-    area_target = torch.histc(target, bins=K, min=0, max=K - 1)
+    area_intersection = np.histogram(intersection, bins=K, range=(0, K - 1))[0]
+    area_output = np.histogram(output, bins=K, range=(0, K - 1))[0]
+    area_target = np.histogram(target, bins=K, range=(0, K - 1))[0]
     return area_intersection, area_output, area_target
 
 
@@ -21,9 +21,9 @@ def fscore(predict, target):
     target[target > 0] = 1
     predict[predict > 0] = 1
 
-    t = torch.sum(target)
-    p = torch.sum(predict)
-    tp = torch.sum(target * predict).float()
+    t = np.sum(target)
+    p = np.sum(predict)
+    tp = np.sum(target * predict).astype(np.float32)
     recall = tp / (t + 1e-20)
     precision = tp / (p + 1e-20)
     f_score = (1 + 0.3) * precision * recall / (0.3 * precision + recall +
@@ -55,9 +55,9 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
     bg_boundary_gt = boundary_gt[gt == 0]
     bg_boundary_predict = boundary_predict[gt == 0]
 
-    counts = torch.bincount(gt.view(-1).long())
+    counts = np.bincount(gt.reshape(-1).astype(np.int32))
     size = {}
-    for c in torch.unique(gt.view(-1)):
+    for c in np.unique(gt.reshape(-1)):
         if c == 0:
             continue
         size[int(c)] = math.ceil(100.0 * counts[int(c)] / sum(counts))
@@ -79,8 +79,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
 
     # different_size
     if len(s5) > 0:
-        gt5 = torch.cat([bg_gt] + [gts[k] for k in s5], dim=0)
-        predict5 = torch.cat([bg_predict] + [predicts[k] for k in s5], dim=0)
+        gt5 = np.concatenate([bg_gt] + [gts[k] for k in s5], axis=0)
+        predict5 = np.concatenate([bg_predict] + [predicts[k] for k in s5], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict5, gt5, K)
 
         Ts[0] += area_output
@@ -88,8 +88,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
         TPs[0] += area_intersection
 
         # boundary
-        gt5 = torch.cat([bg_boundary_gt] + [boundary_gts[k] for k in s5], dim=0)
-        predict5 = torch.cat([bg_boundary_predict] + [boundary_predicts[k] for k in s5], dim=0)
+        gt5 = np.concatenate([bg_boundary_gt] + [boundary_gts[k] for k in s5], axis=0)
+        predict5 = np.concatenate([bg_boundary_predict] + [boundary_predicts[k] for k in s5], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict5, gt5, K + 1)
 
         BTs[0] += area_output[1:]
@@ -97,8 +97,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
         BTPs[0] += area_intersection[1:]
 
     if len(s25) > 0:
-        gt25 = torch.cat([bg_gt] + [gts[k] for k in s25], dim=0)
-        predict25 = torch.cat([bg_predict] + [predicts[k] for k in s25], dim=0)
+        gt25 = np.concatenate([bg_gt] + [gts[k] for k in s25], axis=0)
+        predict25 = np.concatenate([bg_predict] + [predicts[k] for k in s25], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict25, gt25, K)
 
         Ts[1] += area_output
@@ -106,8 +106,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
         TPs[1] += area_intersection
 
         # boundary
-        gt25 = torch.cat([bg_boundary_gt] + [boundary_gts[k] for k in s25], dim=0)
-        predict25 = torch.cat([bg_boundary_predict] + [boundary_predicts[k] for k in s25], dim=0)
+        gt25 = np.concatenate([bg_boundary_gt] + [boundary_gts[k] for k in s25], axis=0)
+        predict25 = np.concatenate([bg_boundary_predict] + [boundary_predicts[k] for k in s25], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict25, gt25, K + 1)
 
         BTs[1] += area_output[1:]
@@ -115,8 +115,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
         BTPs[1] += area_intersection[1:]
 
     if len(s50) > 0:
-        gt50 = torch.cat([bg_gt] + [gts[k] for k in s50], dim=0)
-        predict50 = torch.cat([bg_predict] + [predicts[k] for k in s50], dim=0)
+        gt50 = np.concatenate([bg_gt] + [gts[k] for k in s50], axis=0)
+        predict50 = np.concatenate([bg_predict] + [predicts[k] for k in s50], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict50, gt50, K)
 
         Ts[2] += area_output
@@ -124,8 +124,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
         TPs[2] += area_intersection
 
         # boundary
-        gt50 = torch.cat([bg_boundary_gt] + [boundary_gts[k] for k in s50], dim=0)
-        predict50 = torch.cat([bg_boundary_predict] + [boundary_predicts[k] for k in s50], dim=0)
+        gt50 = np.concatenate([bg_boundary_gt] + [boundary_gts[k] for k in s50], axis=0)
+        predict50 = np.concatenate([bg_boundary_predict] + [boundary_predicts[k] for k in s50], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict50, gt50, K + 1)
 
         BTs[2] += area_output[1:]
@@ -133,8 +133,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
         BTPs[2] += area_intersection[1:]
 
     if len(s100) > 0:
-        gt100 = torch.cat([bg_gt] + [gts[k] for k in s100], dim=0)
-        predict100 = torch.cat([bg_predict] + [predicts[k] for k in s100], dim=0)
+        gt100 = np.concatenate([bg_gt] + [gts[k] for k in s100], axis=0)
+        predict100 = np.concatenate([bg_predict] + [predicts[k] for k in s100], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict100, gt100, K)
 
         Ts[3] += area_output
@@ -142,8 +142,8 @@ def IoUDifferentSizeGPUWithBoundary(predict, gt, boundary_predict, boundary_gt, 
         TPs[3] += area_intersection
 
         # boundary
-        gt100 = torch.cat([bg_boundary_gt] + [boundary_gts[k] for k in s100], dim=0)
-        predict100 = torch.cat([bg_boundary_predict] + [boundary_predicts[k] for k in s100], dim=0)
+        gt100 = np.concatenate([bg_boundary_gt] + [boundary_gts[k] for k in s100], axis=0)
+        predict100 = np.concatenate([bg_boundary_predict] + [boundary_predicts[k] for k in s100], axis=0)
         area_intersection, area_output, area_target = intersectionAndUnionGPU(predict100, gt100, K + 1)
 
         BTs[3] += area_output[1:]

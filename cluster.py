@@ -1,15 +1,17 @@
 import os
-import torch
-import torch.nn as nn
+import jittor as jt
+import jittor.nn as nn
+jt.flags.use_cuda = 1
 import argparse
 from tqdm import tqdm
-from torchvision import transforms
 import numpy as np
 from cluster.kmeans import Kmeans
 from sklearn.metrics.cluster import normalized_mutual_info_score
-from cluster.hungarian import reAssignSingle, reAssignMultiply
+from cluster.hungarian import reAssignSingle
 import json
 import src.resnet as resnet_model
+from src.utils import bool_flag
+import jittor.transform as transforms
 from src.singlecropdataset import ClusterImageFolder
 
 parser = argparse.ArgumentParser(description="Argument For Eval")
@@ -21,36 +23,39 @@ parser.add_argument("-s", "--seed", default=None, type=int, help="the seed for c
 parser.add_argument("--pretrained", type=str, default=None, help="the model checkpoint")
 parser.add_argument("--data_path", type=str, default=None, help="path to data")
 parser.add_argument("--dump_path", type=str, default=None, help="path to save clustering results")
+parser.add_argument("--checkpoint_key", type=str, default='state_dict', help="key of model in checkpoint")
 args = parser.parse_args()
 
 
 def main():
 
-    model = resnet_model.__dict__[args.arch](hidden_mlp=0, output_dim=0, nmb_prototypes=0, train_mode='pixelattn')
+    if 'resnet' in args.arch:
+        model = resnet_model.__dict__[args.arch](hidden_mlp=0, output_dim=0, nmb_prototypes=0, train_mode='pixelattn')
+    else:
+        raise NotImplementedError()
 
     # loading pretrained weights
-    checkpoint = torch.load(args.pretrained, map_location="cpu")["state_dict"]
-    state_dict = {}
-    for k in checkpoint.keys():
-        if k.startswith("module") and not k.startswith("module.prototypes") and not k.startswith("module.projection"):
-            state_dict[k[len("module.") :]] = checkpoint[k]
+    checkpoint = jt.load(args.pretrained)[args.checkpoint_key]
+    for k in list(checkpoint.keys()):
+        if k.startswith('module.'):
+            checkpoint[k[len('module.'):]] = checkpoint[k]
+            del checkpoint[k]
+            k = k[len('module.'):]
+        if k not in model.state_dict().keys():
+            del checkpoint[k]
 
-    msg = model.load_state_dict(state_dict, strict=False)
+    model.load_state_dict(checkpoint)
     print("=> loaded model '{}'".format(args.pretrained))
-    assert len(msg.missing_keys) == 0, msg.missing_keys
-    model = nn.DataParallel(model)
-    model.cuda()
     model.eval()
 
     # build datasets
     train_folder = os.path.join(args.data_path, "train")
     val_folder = os.path.join(args.data_path, "validation")
-    mask_folder = os.path.join(args.data_path, "validation-segmentation")
     dump_path = os.path.join(args.dump_path, "cluster")
     if not os.path.exists(dump_path):
         os.makedirs(dump_path)
 
-    normalize = transforms.Normalize(
+    normalize = transforms.ImageNormalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     )
     train_dataset = ClusterImageFolder(
@@ -64,11 +69,9 @@ def main():
             ]
         ),
     )
-    train_loader = torch.utils.data.DataLoader(
-        train_dataset,
+    train_loader = train_dataset.set_attrs(
         batch_size=args.batch_size,
         num_workers=args.num_workers,
-        pin_memory=True,
     )
     val_dataset = ClusterImageFolder(
         val_folder,
@@ -81,22 +84,23 @@ def main():
             ]
         )
     )
-    val_loader = torch.utils.data.DataLoader(
-        val_dataset, batch_size=1, num_workers=args.num_workers, pin_memory=True
+    val_loader = val_dataset.set_attrs(
+        batch_size=1, 
+        num_workers=args.num_workers
     )
 
     # extracting features
     print("Extracting features ...")
-    _, train_targets, train_embeddings, train_paths = getEmb(train_loader, model, len(train_dataset))
-    _, _, val_embeddings, val_paths = getEmb(val_loader, model.module, len(val_dataset))
+    _, train_targets, train_embeddings, train_paths = getEmb(train_loader, model, len(train_dataset.imgs))
+    _, _, val_embeddings, val_paths = getEmb(val_loader, model, len(val_dataset.imgs))
     train_targets = train_targets.tolist()
 
     # clustering
     print("Clustering features ...")
     deepcluster = Kmeans(args.num_classes, nredo=30)
     deepcluster.cluster(train_embeddings.copy(), npdata2=val_embeddings.copy(), save_centroids=True)
-    train_labels = deepcluster.labels[:len(train_dataset)]
-    val_labels = [[x] for x in deepcluster.labels[len(train_dataset):]]
+    train_labels = deepcluster.labels[:len(train_dataset.imgs)]
+    val_labels = [[x] for x in deepcluster.labels[len(train_dataset.imgs):]]
 
     # clustering metric
     nmi_train = normalized_mutual_info_score(train_targets, train_labels)
@@ -136,28 +140,31 @@ def save(train_paths, val_paths, dump_path, result):
 
 
 def getEmb(dataloader, model, size):
-    targets = torch.zeros(size).long().cuda()
+    targets = jt.zeros(size).long()
     embeddings = None
-    indexes = torch.zeros(size).long().cuda()
+    indexes = jt.zeros(size).long()
     paths = []
     start_idx = 0
-    with torch.no_grad():
+    with jt.no_grad():
         for idx, path, inputs, target in tqdm(dataloader):
             nmb_unique_idx = inputs.size(0)
 
             # get embeddings
-            inputs = inputs.cuda(non_blocking=True)
             emb = model(inputs, mode="cluster")
 
             if start_idx == 0:
-                embeddings = torch.zeros(size, emb.shape[1]).cuda()
+                embeddings = jt.zeros(size, emb.shape[1])
 
             # fill the memory bank
-            targets[start_idx : start_idx + nmb_unique_idx] = target
-            indexes[start_idx : start_idx + nmb_unique_idx] = idx
-            embeddings[start_idx : start_idx + nmb_unique_idx] = emb
+            targets[start_idx : start_idx + nmb_unique_idx] = target.copy()
+            indexes[start_idx : start_idx + nmb_unique_idx] = idx.copy()
+            embeddings[start_idx : start_idx + nmb_unique_idx] = emb.copy()
             paths += path
             start_idx += nmb_unique_idx
+
+            jt.clean_graph()
+            jt.sync_all()
+            jt.gc()
     return indexes.cpu().numpy(), targets.cpu().numpy(), embeddings.cpu().numpy(), paths
 
 
@@ -167,9 +174,7 @@ def fix_random_seeds():
     """
     if args.seed is None:
         return
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
-    np.random.seed(args.seed)
+    jt.set_global_seed(args.seed)
 
 
 if __name__ == "__main__":

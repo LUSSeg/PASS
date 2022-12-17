@@ -1,7 +1,6 @@
 from munkres import Munkres
 import numpy as np
-import math
-import torch
+import jittor as jt
 
 
 def reAssignSingle(target1, target2, num_classes):
@@ -13,7 +12,7 @@ def reAssignSingle(target1, target2, num_classes):
     target2 (list[int]): Generated label for each image.
     num_classes (int): The number of classes.
     """
-    matrix = np.zeros(shape=(num_classes, num_classes), dtype=np.float).tolist()
+    matrix = np.zeros(shape=(num_classes, num_classes), dtype=np.float32).tolist()
     for i in range(num_classes):
         for j in range(num_classes):
             oldi = np.where(target1 == i)
@@ -41,7 +40,7 @@ def reAssignMultiply(target1, target2, num_classes):
     target2 (list[list[int]]): Generated label for each image.
     num_classes (int): The number of classes.
     """
-    matrix = np.zeros(shape=(num_classes, num_classes), dtype=np.float).tolist()
+    matrix = np.zeros(shape=(num_classes, num_classes), dtype=np.float32).tolist()
     olds = {}
     news = {}
     for i in range(num_classes):
@@ -65,7 +64,7 @@ def reAssignMultiply(target1, target2, num_classes):
 
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
-    with torch.no_grad():
+    with jt.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
 
@@ -75,6 +74,6 @@ def accuracy(output, target, topk=(1,)):
 
         res = []
         for k in topk:
-            correct_k = correct[:k].contiguous().view(-1).float().sum(0, keepdim=True)
+            correct_k = correct[:k].contiguous().view(-1).float().sum(0, keepdims=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res

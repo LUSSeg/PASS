@@ -5,9 +5,11 @@
 # LICENSE file in the root directory of this source tree.
 #
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+# import torch
+# import torch.nn as nn
+# import torch.nn.functional as F
+import jittor as jt
+import jittor.nn as nn
 
 
 def conv3x3(in_planes, out_planes, stride=1, groups=1, dilation=1):
@@ -50,7 +52,7 @@ class BasicBlock(nn.Module):
     ):
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = jt.BatchNorm2d
         if groups != 1 or base_width != 64:
             raise ValueError(
                 'BasicBlock only supports groups=1 and base_width=64')
@@ -61,13 +63,13 @@ class BasicBlock(nn.Module):
         # when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
         self.bn1 = norm_layer(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
         self.conv2 = conv3x3(planes, planes)
         self.bn2 = norm_layer(planes)
         self.downsample = downsample
         self.stride = stride
 
-    def forward(self, x):
+    def execute(self, x):
         identity = x
 
         out = self.conv1(x)
@@ -103,7 +105,7 @@ class Bottleneck(nn.Module):
     ):
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = jt.BatchNorm2d
         width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input
         # when stride != 1
@@ -113,11 +115,11 @@ class Bottleneck(nn.Module):
         self.bn2 = norm_layer(width)
         self.conv3 = conv1x1(width, planes * self.expansion)
         self.bn3 = norm_layer(planes * self.expansion)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
         self.downsample = downsample
         self.stride = stride
 
-    def forward(self, x):
+    def execute(self, x):
         identity = x
 
         out = self.conv1(x)
@@ -147,18 +149,17 @@ class Mulpixelattn(nn.Module):
         self.atten = nn.Sequential(
             nn.Conv2d(channels, hidden_mlp, 1),
             nn.BatchNorm2d(hidden_mlp),
-            nn.ReLU(inplace=True),
+            nn.ReLU(),
             nn.Conv2d(hidden_mlp, channels, 1),
             nn.BatchNorm2d(channels, affine=True),
         )
-        self.threshold = nn.Parameter(torch.Tensor(1, channels, 1, 1))
-        self.threshold.data.fill_(0)
+        self.threshold = jt.zeros((1, channels, 1, 1))
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
-    def forward(self, x):
+    def execute(self, x):
         x = self.atten(x)
         x = x + self.threshold
-        att = torch.sigmoid(x)
+        att = jt.sigmoid(x)
         return att
 
 
@@ -217,7 +218,7 @@ class ResNet(nn.Module):
                                padding=2,
                                bias=False)
         self.bn1 = norm_layer(num_out_filters)
-        self.relu = nn.ReLU(inplace=True)
+        self.relu = nn.ReLU()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, num_out_filters, layers[0])
         num_out_filters *= 2
@@ -252,7 +253,7 @@ class ResNet(nn.Module):
             self.projection_head = nn.Linear(num_out_filters * block.expansion,
                                              output_dim)
             if self.train_mode == 'pretrain':
-                self.projection_head_shallow = nn.ModuleDict()
+                self.projection_head_shallow = nn.ModuleList()
                 if self.shallow is not None:
                     for stage in shallow:
                         assert stage < 4
@@ -265,13 +266,13 @@ class ResNet(nn.Module):
             mlps = [
                 nn.Linear(num_out_filters * block.expansion, hidden_mlp),
                 nn.BatchNorm1d(hidden_mlp),
-                nn.ReLU(inplace=True),
+                nn.ReLU(),
                 nn.Linear(hidden_mlp, output_dim),
                 nn.BatchNorm1d(output_dim, affine=False)
             ]
             self.projection_head = nn.Sequential(*mlps)
             if self.train_mode == 'pretrain':
-                self.projection_head_shallow = nn.ModuleDict()
+                self.projection_head_shallow = nn.ModuleList()
                 if self.shallow is not None:
                     for stage in shallow:
                         assert stage < 4
@@ -281,11 +282,11 @@ class ResNet(nn.Module):
                                 nn.Linear(
                                     num_out_filters * block.expansion // (2 * (4 - stage)),
                                     hidden_mlp), nn.BatchNorm1d(hidden_mlp),
-                                nn.ReLU(inplace=True),
+                                nn.ReLU(),
                                 nn.Linear(hidden_mlp, output_dim),
                                 nn.BatchNorm1d(output_dim, affine=False)))
         if self.train_mode == 'pretrain':
-            self.projection_head_pixel_shallow = nn.ModuleDict()
+            self.projection_head_pixel_shallow = nn.ModuleList()
             if self.shallow is not None:
                 for stage in shallow:
                     assert stage < 4
@@ -299,13 +300,13 @@ class ResNet(nn.Module):
                                 bias=False,
                             ),
                             nn.BatchNorm2d(hidden_mlp),
-                            nn.ReLU(inplace=True),
+                            nn.ReLU(),
                             nn.Conv2d(hidden_mlp,
                                       hidden_mlp,
                                       kernel_size=1,
                                       bias=False),
                             nn.BatchNorm2d(hidden_mlp),
-                            nn.ReLU(inplace=True),
+                            nn.ReLU(),
                             nn.Conv2d(
                                 hidden_mlp,
                                 num_out_filters * block.expansion // (2 * (4 - stage)),
@@ -324,17 +325,17 @@ class ResNet(nn.Module):
                           kernel_size=1,
                           bias=False),
                 nn.BatchNorm2d(hidden_mlp),
-                nn.ReLU(inplace=True),
+                nn.ReLU(),
                 nn.Conv2d(hidden_mlp, hidden_mlp, kernel_size=1, bias=False),
                 nn.BatchNorm2d(hidden_mlp),
-                nn.ReLU(inplace=True),
+                nn.ReLU(),
                 nn.Conv2d(hidden_mlp, output_dim, kernel_size=1, bias=False),
                 nn.BatchNorm2d(output_dim, affine=False),
             )
             self.predictor_head_pixel = nn.Sequential(
                 nn.Conv2d(output_dim, output_dim, 1, bias=False),
                 nn.BatchNorm2d(output_dim),
-                nn.ReLU(inplace=True),
+                nn.ReLU(),
                 nn.Conv2d(output_dim, output_dim, 1),
             )
 
@@ -356,11 +357,6 @@ class ResNet(nn.Module):
                 nn.init.kaiming_normal_(m.weight,
                                         mode='fan_out',
                                         nonlinearity='relu')
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                if m.weight is not None:
-                    nn.init.constant_(m.weight, 1)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
 
         # Zero-initialize the last BN in each residual branch,
         # so that the residual branch starts with zeros,
@@ -413,7 +409,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward_backbone(self, x, avgpool=True):
+    def execute_backbone(self, x, avgpool=True):
         x = self.padding(x)
 
         x = self.conv1(x)
@@ -433,154 +429,158 @@ class ResNet(nn.Module):
 
         if avgpool:
             x = self.avgpool(x)
-            x = torch.flatten(x, 1)
+            x = jt.flatten(x, 1)
             return x
 
         return x, c3, c2, c1
 
-    def forward_head(self, x):
+    def execute_head(self, x):
         if self.projection_head is not None:
             x = self.projection_head(x)
 
         if self.l2norm:
-            x = nn.functional.normalize(x, dim=1, p=2)
+            x = jt.normalize(x, dim=1, p=2)
 
         if self.prototypes is not None:
             return x, self.prototypes(x)
         return x
 
-    def forward_head_shallow(self, x, stage):
+    def execute_head_shallow(self, x, stage):
         if (self.projection_head_shallow is not None
                 and f'projection_head_shallow{stage}'
                 in self.projection_head_shallow.keys()):
-            x = self.projection_head_shallow[
+            x = self.projection_head_shallow.layers[
                 f'projection_head_shallow{stage}'](x)
 
         if self.l2norm:
-            x = nn.functional.normalize(x, dim=1, p=2)
+            x = jt.normalize(x, dim=1, p=2)
 
         if self.prototypes is not None:
-            return x, F.linear(x, self.prototypes.weight.detach())
+            return x, nn.matmul_transpose(x, self.prototypes.weight.detach()) 
         return x
 
-    def forward_head_pixel(self, x, gridq, gridk):
+    def execute_head_pixel(self, x, gridq, gridk):
         if self.projection_head_pixel is not None:
             x = self.projection_head_pixel(x)
 
         # grid sample 28 x 28
-        grid = torch.cat([gridq, gridk], dim=0)
-        x = F.grid_sample(x, grid, align_corners=False, mode='bilinear')
+        grid = jt.concat([gridq, gridk], dim=0)
+        x = nn.grid_sample(x, grid, align_corners=False, mode='bilinear')
 
         return x, self.predictor_head_pixel(x)
 
-    def forward(self, inputs, gridq=None, gridk=None, mode='train'):
+    def execute(self, inputs, gridq=None, gridk=None, mode='train'):
         if mode == 'cluster':
-            return self.inference_cluster(inputs)
+            output = self.inference_cluster(inputs)
+            return output
         elif mode == 'inference_pixel_attention':
             return self.inference_pixel_attention(inputs)
 
         if self.train_mode == 'finetune':
-            out = self.forward_backbone(inputs)
+            out = self.execute_backbone(inputs)
             return self.last_layer(out)
 
         if not isinstance(inputs, list):
             inputs = [inputs]
-        idx_crops = torch.cumsum(
-            torch.unique_consecutive(
-                torch.tensor([inp.shape[-1] for inp in inputs]),
-                return_counts=True,
-            )[1], 0)
+        idx_crops, last_size = [0], inputs[0].shape[-1]
+        for sample in [inp.shape[-1] for inp in inputs]:
+            if sample == last_size:
+                idx_crops[-1] += 1
+            else:
+                idx_crops.append(idx_crops[-1] + 1)
+
         start_idx = 0
         for end_idx in idx_crops:
-            _out = self.forward_backbone(torch.cat(
-                inputs[start_idx:end_idx]).cuda(non_blocking=True),
-                                         avgpool=self.train_mode != 'pretrain')
+            _out = self.execute_backbone(jt.concat(
+                inputs[start_idx:end_idx]), avgpool=self.train_mode != 'pretrain')
             if start_idx == 0:
                 if self.train_mode == 'pixelattn':
-                    _out = self.forward_pixel_attention(_out)
+                    _out = self.execute_pixel_attention(_out)
                 elif self.train_mode == 'pretrain':
                     _out, _c3, _c2, _c1 = _out
                     (
                         embedding_deep_pixel,
                         output_deep_pixel,
-                    ) = self.forward_head_pixel(_out, gridq, gridk)
+                    ) = self.execute_head_pixel(_out, gridq, gridk)
                     _stages = [_c1, _c2, _c3]
                     if self.shallow is not None:
                         output_c = []
                         for i, stage in enumerate(self.shallow):
                             _c = _stages[stage - 1]
-                            _out_c = self.projection_head_pixel_shallow[
+                            _out_c = self.projection_head_pixel_shallow.layers[
                                 f'projection_head_pixel{stage}'](_c)
                             _out_c = self.avgpool(_out_c)
-                            _out_c = torch.flatten(_out_c, 1)
+                            _out_c = jt.flatten(_out_c, 1)
                             output_c.append(_out_c)
                     _out = self.avgpool(_out)
-                    _out = torch.flatten(_out, 1)
+                    _out = jt.flatten(_out, 1)
                 output = _out
             else:
                 if self.train_mode == 'pixelattn':
-                    _out = self.forward_pixel_attention(_out)
+                    _out = self.execute_pixel_attention(_out)
                 elif self.train_mode == 'pretrain':
                     _out, _, _, _ = _out
                     _out = self.avgpool(_out)
-                    _out = torch.flatten(_out, 1)
-                output = torch.cat((output, _out))
+                    _out = jt.flatten(_out, 1)
+                output = jt.concat((output, _out))
             start_idx = end_idx
 
-        embedding, output = self.forward_head(output)
+        embedding, output = self.execute_head(output)
         if self.shallow is not None:
             for i, stage in enumerate(self.shallow):
-                embedding_c_, output_c_ = self.forward_head_shallow(output_c[i],
+                embedding_c_, output_c_ = self.execute_head_shallow(output_c[i],
                                                                   stage=stage)
-                embedding = torch.cat((embedding, embedding_c_))
-                output = torch.cat((output, output_c_))
+                embedding = jt.concat((embedding, embedding_c_))
+                output = jt.concat((output, output_c_))
         if self.train_mode == 'pixelattn':
             return embedding, output
         elif self.train_mode == 'pretrain':
             return embedding, output, embedding_deep_pixel, output_deep_pixel
         return embedding, output
 
-    def forward_pixel_attention(self, out, threshold=None):
-        out = F.interpolate(out,
-                            size=(out.shape[2] * 4, out.shape[3] * 4),
-                            mode='bilinear')
-        out = nn.functional.normalize(out, dim=1, p=2)
+    def execute_pixel_attention(self, out, threshold=None):
+        out = nn.interpolate(
+            out, 
+            size=(out.shape[2] * 4, out.shape[3] * 4), 
+            mode='bilinear')
+        out = jt.normalize(out, dim=1, p=2)
         fg = self.fbg(out)
         if threshold is not None:
             fg[fg < threshold] = 0
 
         out = out * fg
         out = self.avgpool(out)
-        out = torch.flatten(out, 1)
+        out = jt.flatten(out, 1)
 
         return out
 
     def inference_cluster(self, x, threshold=None):
-        out = self.forward_backbone(x.cuda(non_blocking=True))
-
-        out = F.interpolate(out,
-                            size=(out.shape[2] * 4, out.shape[3] * 4),
-                            mode='bilinear')
-        nout = nn.functional.normalize(out, dim=1, p=2)
+        out = self.execute_backbone(x)
+        out = nn.interpolate(
+            out, 
+            size=(out.shape[2] * 4, out.shape[3] * 4), 
+            mode='bilinear')
+        nout = jt.normalize(out, dim=1, p=2)
         fg = self.fbg(nout)
         if threshold is not None:
             fg[fg < threshold] = 0
 
         out = out * fg
         out = self.avgpool(out)
-        out = torch.flatten(out, 1)
+        out = jt.flatten(out, 1)
 
         return out
 
     def inference_pixel_attention(self, x):
-        out = self.forward_backbone(x.cuda(non_blocking=True))
+        out = self.execute_backbone(x)
 
-        out = F.interpolate(out,
-                            size=(out.shape[2] * 4, out.shape[3] * 4),
-                            mode='bilinear')
-        out_ = nn.functional.normalize(out, dim=1, p=2)
+        out = nn.interpolate(
+            out, 
+            size=(out.shape[2] * 4, out.shape[3] * 4), 
+            mode='bilinear')
+        out_ = jt.normalize(out, dim=1, p=2)
         fg = self.fbg(out_)
-        fg = fg.mean(dim=1, keepdim=True)
+        fg = fg.mean(dim=1, keepdims=True)
 
         return out, fg
 
@@ -590,10 +590,10 @@ class MultiPrototypes(nn.Module):
         super().__init__()
         self.nmb_heads = len(nmb_prototypes)
         for i, k in enumerate(nmb_prototypes):
-            self.add_module('prototypes' + str(i),
+            setattr(self, 'prototypes' + str(i),
                             nn.Linear(output_dim, k, bias=False))
 
-    def forward(self, x):
+    def execute(self, x):
         out = []
         for i in range(self.nmb_heads):
             out.append(getattr(self, 'prototypes' + str(i))(x))
@@ -606,15 +606,3 @@ def resnet18(**kwargs):
 
 def resnet50(**kwargs):
     return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
-
-
-def resnet50w2(**kwargs):
-    return ResNet(Bottleneck, [3, 4, 6, 3], widen=2, **kwargs)
-
-
-def resnet50w4(**kwargs):
-    return ResNet(Bottleneck, [3, 4, 6, 3], widen=4, **kwargs)
-
-
-def resnet50w5(**kwargs):
-    return ResNet(Bottleneck, [3, 4, 6, 3], widen=5, **kwargs)

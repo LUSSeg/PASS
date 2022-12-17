@@ -1,6 +1,6 @@
 CUDA='0,1,2,3,4,5,6,7'
 N_GPU=8
-BATCH=32
+BATCH=256
 DATA=/data/ImageNetS/ImageNetS300
 IMAGENETS=/data/ImageNetS/ImageNetS300
 
@@ -23,7 +23,7 @@ FREEZE_PROTOTYPES_PIXELATT=0
 mkdir -p ${DUMP_PATH_FINETUNE}
 mkdir -p ${DUMP_PATH_SEG}
 
-CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node=${N_GPU} main_pretrain.py \
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python main_pretrain.py \
 --arch ${ARCH} \
 --data_path ${DATA}/train \
 --dump_path ${DUMP_PATH} \
@@ -47,15 +47,12 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --freeze_prototypes_niters ${FREEZE_PROTOTYPES} \
 --wd 0.000001 \
 --warmup_epochs 0 \
---use_fp16 true \
---sync_bn pytorch \
 --workers 10 \
---dist_url ${DIST_URL} \
---seed 10010 \
+--seed 31 \
 --shallow 3 \
 --weights 1 1
 
-CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node=${N_GPU} main_pixel_attention.py \
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python main_pixel_attention.py \
 --arch ${ARCH} \
 --data_path ${IMAGENETS}/train \
 --dump_path ${DUMP_PATH_FINETUNE} \
@@ -79,27 +76,23 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --freeze_prototypes_niters ${FREEZE_PROTOTYPES_PIXELATT} \
 --wd 0.000001 \
 --warmup_epochs 0 \
---use_fp16 true \
---sync_bn pytorch \
 --workers 10 \
---dist_url ${DIST_URL} \
---seed 10010 \
+--seed 31 \
 --pretrained ${DUMP_PATH}/checkpoint.pth.tar
 
-CUDA_VISIBLE_DEVICES=${CUDA} python cluster.py -a ${ARCH} \
+CUDA_VISIBLE_DEVICES=${CUDA} python cluster_tmp.py -a ${ARCH} \
 --pretrained ${DUMP_PATH_FINETUNE}/checkpoint.pth.tar \
 --data_path ${IMAGENETS} \
 --dump_path ${DUMP_PATH_FINETUNE} \
 -c ${NUM_CLASSES}
 
-## Evaluating the pseudo labels on the validation set.
+## #Evaluating the pseudo labels on the validation set.
 CUDA_VISIBLE_DEVICES=${CUDA} python inference_pixel_attention.py -a ${ARCH} \
 --pretrained ${DUMP_PATH_FINETUNE}/checkpoint.pth.tar \
 --data_path ${IMAGENETS} \
 --dump_path ${DUMP_PATH_FINETUNE} \
 -c ${NUM_CLASSES} \
 --mode validation \
---dist_url ${DIST_URL} \
 --test \
 --centroid ${DUMP_PATH_FINETUNE}/cluster/centroids.npy
 
@@ -109,20 +102,19 @@ CUDA_VISIBLE_DEVICES=${CUDA} python evaluator.py \
 -c ${NUM_CLASSES} \
 --mode validation \
 --curve \
---min 0 \
+--min 20 \
 --max 80
 
-CUDA_VISIBLE_DEVICES=${CUDA} python inference_pixel_attention.py -a ${ARCH} \
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python inference_pixel_attention.py -a ${ARCH} \
 --pretrained ${DUMP_PATH_FINETUNE}/checkpoint.pth.tar \
 --data_path ${IMAGENETS} \
 --dump_path ${DUMP_PATH_FINETUNE} \
 -c ${NUM_CLASSES} \
 --mode train \
 --centroid ${DUMP_PATH_FINETUNE}/cluster/centroids.npy \
---dist_url ${DIST_URL} \
--t 0.40
+-t 0.43
 
-CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node=${N_GPU} main_pixel_finetuning.py \
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python main_pixel_finetuning.py \
 --arch ${ARCH} \
 --data_path ${DATA}/train \
 --dump_path ${DUMP_PATH_SEG} \
@@ -132,10 +124,7 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --final_lr 0.0006 \
 --wd 0.000001 \
 --warmup_epochs 0 \
---use_fp16 true \
---sync_bn pytorch \
 --workers 8 \
---dist_url ${DIST_URL} \
 --num_classes ${NUM_CLASSES} \
 --pseudo_path ${DUMP_PATH_FINETUNE}/train \
 --pretrained ${DUMP_PATH}/checkpoint.pth.tar
@@ -145,7 +134,6 @@ CUDA_VISIBLE_DEVICES=${CUDA} python inference.py -a ${ARCH} \
 --data_path ${IMAGENETS} \
 --dump_path ${DUMP_PATH_SEG} \
 -c ${NUM_CLASSES} \
---dist_url ${DIST_URL} \
 --mode validation \
 --match_file ${DUMP_PATH_SEG}/validation/match.json
 
@@ -154,10 +142,3 @@ CUDA_VISIBLE_DEVICES=${CUDA} python evaluator.py \
 --data_path ${IMAGENETS} \
 -c ${NUM_CLASSES} \
 --mode validation
-
-bash distance_matching/distance_matching.sh ${ARCH} \
-${DUMP_PATH}/checkpoint.pth.tar \
-${DUMP_PATH_SEG}/distance_matching \
-${IMAGENETS} \
-${NUM_CLASSES} \
-validation

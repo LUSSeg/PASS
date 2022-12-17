@@ -54,15 +54,17 @@ def getOption():
     parser.add_argument("--warmup_epochs", default=10, type=int, help="number of warmup epochs")
     parser.add_argument("--start_warmup", default=0, type=float,
                         help="initial warmup learning rate")
+    parser.add_argument("--finetune_scale_factor", default=0.5, type=float,
+                        help="scale_factor of pseudo-labels in pixel-level finetuning")
+    parser.add_argument("--optim", default="sgd", type=str, help="the optimizer for finetuning")
+    parser.add_argument("--checkpoint_key", type=str, default='state_dict', help="key of model in checkpoint")
+
 
     #########################
     #### dist parameters ###
     #########################
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up distributed
                         training; see https://pytorch.org/docs/stable/distributed.html""")
-    parser.add_argument("--world_size", default=-1, type=int, help="""
-                        number of processes: it is set automatically and
-                        should not be passed as argument""")
     parser.add_argument("--rank", default=0, type=int, help="""rank of this process:
                         it is set automatically and should not be passed as argument""")
     parser.add_argument("--local_rank", default=0, type=int,
@@ -89,8 +91,6 @@ def getOption():
                         help="number of data loading workers")
     parser.add_argument("--checkpoint_freq", type=int, default=25,
                         help="Save the model periodically")
-    parser.add_argument("--use_fp16", type=bool_flag, default=True,
-                        help="whether to train with mixed precision or not")
     parser.add_argument("--sync_bn", type=str, default="pytorch", help="synchronize bn")
     parser.add_argument("--syncbn_process_group_size", type=int, default=8, help=""" see
                         https://github.com/NVIDIA/apex/blob/master/apex/parallel/__init__.py#L58-L67""")

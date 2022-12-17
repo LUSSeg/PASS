@@ -11,10 +11,12 @@ import pickle
 from logging import getLogger
 import cv2
 import numpy as np
-import torch
-import torch.distributed as dist
+import math
+import jittor as jt
+import jittor.nn as nn
 from munkres import Munkres
-
+import warnings
+import json
 from .logger import PD_Stats, create_logger
 
 FALSY_STRINGS = {'off', 'false', '0'}
@@ -31,40 +33,6 @@ def bool_flag(s):
         return True
     else:
         raise argparse.ArgumentTypeError('invalid value for a boolean flag')
-
-
-def init_distributed_mode(args):
-    """Initialize the following variables:
-
-    - world_size
-    - rank
-    """
-
-    args.is_slurm_job = 'SLURM_JOB_ID' in os.environ
-
-    if args.is_slurm_job:
-        args.rank = int(os.environ['SLURM_PROCID'])
-        args.world_size = int(os.environ['SLURM_NNODES']) * int(
-            os.environ['SLURM_TASKS_PER_NODE'][0])
-    else:
-        # multi-GPU job (local or multi-node)
-        # jobs started with torch.distributed.launch
-        # read environment variables
-        args.rank = int(os.environ['RANK'])
-        args.world_size = int(os.environ['WORLD_SIZE'])
-
-    # prepare distributed
-    dist.init_process_group(
-        backend='nccl',
-        init_method=args.dist_url,
-        world_size=args.world_size,
-        rank=args.rank,
-    )
-
-    # set cuda device
-    args.gpu_to_work_on = args.rank % torch.cuda.device_count()
-    torch.cuda.set_device(args.gpu_to_work_on)
-    return
 
 
 def initialize_exp(params, *args, dump_params=True):
@@ -118,10 +86,7 @@ def restart_from_checkpoint(ckp_paths, run_variables=None, **kwargs):
     logger.info(f'Found checkpoint at {ckp_path}')
 
     # open checkpoint file
-    checkpoint = torch.load(
-        ckp_path,
-        map_location='cuda:' +
-        str(torch.distributed.get_rank() % torch.cuda.device_count()))
+    checkpoint = jt.load(ckp_path)
 
     # key is what to look for in the checkpoint file
     # value is the object to load
@@ -148,9 +113,7 @@ def restart_from_checkpoint(ckp_paths, run_variables=None, **kwargs):
 
 def fix_random_seeds(seed=31):
     """Fix random seeds."""
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
+    jt.set_global_seed(seed)
 
 
 class AverageMeter:
@@ -171,55 +134,57 @@ class AverageMeter:
         self.avg = self.sum / self.count
 
 
-def accuracy(output, target, topk=(1, )):
+def accuracy(output:jt.Var, target, topk=(1, )):
     """Computes the accuracy over the k top predictions for the specified
     values of k."""
-    with torch.no_grad():
+    with jt.no_grad():
         maxk = max(topk)
         batch_size = target.size(0)
 
-        _, pred = output.topk(maxk, 1, True, True)
+        _, pred = jt.misc.topk(output, maxk, 1, True, True)
         pred = pred.t()
-        correct = pred.eq(target.view(1, -1).expand_as(pred))
+        correct = jt.equal(pred, target.view(1, -1).expand_as(pred))
 
         res = []
         for k in topk:
-            correct_k = correct[:k].contiguous().view(-1).float().sum(
-                0, keepdim=True)
-            res.append(correct_k.mul_(100.0 / batch_size))
+            correct_k = correct[:k].view(-1).float().sum(
+                0, keepdims=True)
+            res.append(correct_k * (100.0 / batch_size))
         return res
 
 
-@torch.no_grad()
 def distributed_sinkhorn(args, out):
-    Q = torch.exp(out / args.epsilon).t(
-    )  # Q is K-by-B for consistency with notations from our paper
-    B = Q.shape[1] * args.world_size  # number of samples to assign
-    K = Q.shape[0]  # how many prototypes
+    with jt.no_grad():
+        Q = jt.exp(out / args.epsilon).t(
+        )  # Q is K-by-B for consistency with notations from our paper
+        B = Q.shape[1] * jt.world_size  # number of samples to assign
+        K = Q.shape[0]  # how many prototypes
 
-    # make the matrix sums to 1
-    sum_Q = torch.sum(Q)
-    dist.all_reduce(sum_Q)
-    Q /= sum_Q
+        # make the matrix sums to 1
+        sum_Q = jt.sum(Q)
+        if jt.in_mpi:
+            sum_Q = sum_Q.mpi_all_reduce('add')
+        Q /= sum_Q
 
-    for it in range(args.sinkhorn_iterations):
-        # normalize each row: total weight per prototype must be 1/K
-        sum_of_rows = torch.sum(Q, dim=1, keepdim=True)
-        dist.all_reduce(sum_of_rows)
-        Q /= sum_of_rows
-        Q /= K
+        for it in range(args.sinkhorn_iterations):
+            # normalize each row: total weight per prototype must be 1/K
+            sum_of_rows = jt.sum(Q, dim=1, keepdims=True)
+            if jt.in_mpi:
+                sum_of_rows = sum_of_rows.mpi_all_reduce('add')
+            Q /= sum_of_rows
+            Q /= K
 
-        # normalize each column: total weight per sample must be 1/B
-        Q /= torch.sum(Q, dim=0, keepdim=True)
-        Q /= B
+            # normalize each column: total weight per sample must be 1/B
+            Q /= jt.sum(Q, dim=0, keepdims=True)
+            Q /= B
 
-    Q *= B  # the columns must sum to 1 so that Q is an assignment
-    return Q.t()
+        Q *= B  # the columns must sum to 1 so that Q is an assignment
+        return Q.t()
 
 
 def hungarian(target, prediction, num_classes=50):
     total = len(target)
-    matrix = np.zeros(shape=(num_classes, num_classes), dtype=np.float)
+    matrix = np.zeros(shape=(num_classes, num_classes), dtype=np.float32)
     preds = {}
     gts = {}
     for i in range(num_classes):
@@ -275,3 +240,78 @@ def mask_to_boundary(mask, dilation_ratio=0.02):
     mask_erode = new_mask_erode[1 : h + 1, 1 : w + 1]
     # G_d intersects G in the paper.
     return mask - mask_erode
+
+
+def _no_grad_trunc_normal_(tensor: jt.Var, mean, std, a, b):
+    # Cut & paste from PyTorch official master until it's in a few official releases - RW
+    # Method based on https://people.sc.fsu.edu/~jburkardt/presentations/truncated_normal.pdf
+    def norm_cdf(x):
+        # Computes standard normal cumulative distribution function
+        return (1. + math.erf(x / math.sqrt(2.))) / 2.
+
+    if (mean < a - 2 * std) or (mean > b + 2 * std):
+        warnings.warn("mean is more than 2 std from [a, b] in nn.init.trunc_normal_. "
+                      "The distribution of values may be incorrect.",
+                      stacklevel=2)
+    requires_grad = tensor.requires_grad
+    with jt.no_grad():
+        # Values are generated by using a truncated uniform distribution and
+        # then using the inverse CDF for the normal distribution.
+        # Get upper and lower cdf values
+        l = norm_cdf((a - mean) / std)
+        u = norm_cdf((b - mean) / std)
+
+        # Uniformly fill tensor with values from [l, u], then translate to
+        # [2l-1, 2u-1].
+        jt.init.uniform_(tensor, 2 * l - 1, 2 * u - 1)
+
+        # Use inverse cdf transform for normal distribution to get truncated
+        # standard normal
+        tensor.assign(jt.erfinv(tensor))
+
+        # Transform to proper mean, std
+        tensor.assign(tensor * std * math.sqrt(2.) + mean)
+
+        # Clamp to ensure it's in the proper range
+        tensor.assign(jt.clamp(tensor, min_v=a, max_v=b))
+    tensor.requires_grad = requires_grad
+    return tensor
+
+
+def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
+    return _no_grad_trunc_normal_(tensor, mean, std, a, b)
+
+
+def has_batchnorms(model):
+    bn_types = (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)
+    for name, module in model.named_modules():
+        if isinstance(module, bn_types):
+            return True
+    return False
+
+
+def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epochs=0, start_warmup_value=0):
+    warmup_schedule = np.array([])
+    warmup_iters = warmup_epochs * niter_per_ep
+    if warmup_epochs > 0:
+        warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
+
+    iters = np.arange(epochs * niter_per_ep - warmup_iters)
+    schedule = final_value + 0.5 * (base_value - final_value) * (1 + np.cos(np.pi * iters / len(iters)))
+
+    schedule = np.concatenate((warmup_schedule, schedule))
+    assert len(schedule) == epochs * niter_per_ep
+    return schedule
+
+
+def clip_gradients(model: jt.nn.Module, optimizer: jt.nn.Optimizer, clip):
+    norms = []
+    for pg in optimizer.param_groups:
+        for p, g in zip(pg["params"], pg["grads"]):
+            if p.is_stop_grad(): 
+                continue
+            param_norm = jt.norm(g.flatten(), p=2)
+            norms.append(param_norm.item())
+            clip_coef = clip / (param_norm + 1e-6)
+            if clip_coef < 1:
+                g.update(g * clip_coef)

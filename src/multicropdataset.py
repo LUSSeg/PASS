@@ -9,10 +9,12 @@ from logging import getLogger
 
 from PIL import ImageFilter
 import numpy as np
-import torchvision.datasets as datasets
-import torchvision.transforms as transforms
+import jittor.dataset as datasets
+import jittor.transform as transforms
 import src.gridtransforms as gridsample_transforms
-import torch
+import jittor as jt
+from PIL import Image
+from PIL import Image, ImageOps
 logger = getLogger()
 
 
@@ -32,7 +34,7 @@ class MultiCropDataset(datasets.ImageFolder):
         assert len(min_scale_crops) == len(nmb_crops)
         assert len(max_scale_crops) == len(nmb_crops)
         if size_dataset >= 0:
-            self.samples = self.samples[:size_dataset]
+            self.imgs = self.imgs[:size_dataset]
         self.return_index = return_index
 
         color_transform = [get_color_distortion(), PILRandomGaussianBlur()]
@@ -49,13 +51,13 @@ class MultiCropDataset(datasets.ImageFolder):
                 transforms.RandomHorizontalFlip(p=0.5),
                 transforms.Compose(color_transform),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=mean, std=std)])
+                transforms.ImageNormalize(mean=mean, std=std)])
             ] * nmb_crops[i])
         self.trans = trans
 
     def __getitem__(self, index):
-        path, _ = self.samples[index]
-        image = self.loader(path)
+        path, _ = self.imgs[index]
+        image = Image.open(path).convert('RGB')
         multi_crops = list(map(lambda trans: trans(image), self.trans))
         if self.return_index:
             return index, multi_crops
@@ -103,7 +105,7 @@ class MultiCropDatasetGrid(MultiCropDataset):
                             gridsample_transforms.RandomHorizontalFlip(p=0.5),
                             transforms.Compose(color_transform),
                             transforms.ToTensor(),
-                            transforms.Normalize(mean=mean, std=std),
+                            transforms.ImageNormalize(mean=mean, std=std),
                         ]
                     )
                 ]
@@ -112,8 +114,8 @@ class MultiCropDatasetGrid(MultiCropDataset):
         self.trans = trans
 
     def __getitem__(self, index):
-        path, _ = self.samples[index]
-        image = self.loader(path)
+        path, _ = self.imgs[index]
+        image = Image.open(path).convert('RGB')
         multi_crops = list(map(lambda trans: trans(image), self.trans))
 
         imgs = []
@@ -126,6 +128,20 @@ class MultiCropDatasetGrid(MultiCropDataset):
         gridq, gridk = get_grid(rectq, rectk, self.grid_size)
 
         return imgs, gridq, gridk
+
+
+class Solarization(object):
+    """
+    Apply Solarization to the PIL image.
+    """
+    def __init__(self, p):
+        self.p = p
+
+    def __call__(self, img):
+        if random.random() < self.p:
+            return ImageOps.solarize(img)
+        else:
+            return img
 
 
 class PILRandomGaussianBlur(object):
@@ -156,7 +172,7 @@ def get_color_distortion(s=1.0):
     # s is the strength of color distortion.
     color_jitter = transforms.ColorJitter(0.8*s, 0.8*s, 0.8*s, 0.2*s)
     rnd_color_jitter = transforms.RandomApply([color_jitter], p=0.8)
-    rnd_gray = transforms.RandomGrayscale(p=0.2)
+    rnd_gray = transforms.RandomGray(p=0.2)
     color_distort = transforms.Compose([rnd_color_jitter, rnd_gray])
     return color_distort
 
@@ -170,36 +186,32 @@ def get_grid(rectq, rectk, size):
         min(rectq[1] + rectq[3], rectk[1] + rectk[3]),
     ]
     if overlap[0] < overlap[2] and overlap[1] < overlap[3]:
-        q_overlap = torch.FloatTensor(
-            [
-                (overlap[0] - rectq[0]) / rectq[2],
-                (overlap[1] - rectq[1]) / rectq[3],
-                (overlap[2] - overlap[0]) / rectq[2],
-                (overlap[3] - overlap[1]) / rectq[3],
-            ]
-        )
-        k_overlap = torch.FloatTensor(
-            [
-                (overlap[0] - rectk[0]) / rectk[2],
-                (overlap[1] - rectk[1]) / rectk[3],
-                (overlap[2] - overlap[0]) / rectk[2],
-                (overlap[3] - overlap[1]) / rectk[3],
-            ]
-        )
+        q_overlap = [
+            (overlap[0] - rectq[0]) / rectq[2],
+            (overlap[1] - rectq[1]) / rectq[3],
+            (overlap[2] - overlap[0]) / rectq[2],
+            (overlap[3] - overlap[1]) / rectq[3],
+        ]
+        k_overlap = [
+            (overlap[0] - rectk[0]) / rectk[2],
+            (overlap[1] - rectk[1]) / rectk[3],
+            (overlap[2] - overlap[0]) / rectk[2],
+            (overlap[3] - overlap[1]) / rectk[3],
+        ]
 
-        q_grid = torch.zeros(size=(size, size, 2), dtype=torch.float32)
-        k_grid = torch.zeros(size=(size, size, 2), dtype=torch.float32)
-        q_grid[:, :, 0] = torch.FloatTensor(
-            [q_overlap[0] + i * q_overlap[2] / grid for i in range(size)]
+        q_grid = jt.zeros((size, size, 2), dtype='float32')
+        k_grid = jt.zeros((size, size, 2), dtype='float32')
+        q_grid[:, :, 0] = jt.float32(
+            jt.array([q_overlap[0] + i * q_overlap[2] / grid for i in range(size)])
         ).view(1, size)
-        q_grid[:, :, 1] = torch.FloatTensor(
-            [q_overlap[1] + i * q_overlap[3] / grid for i in range(size)]
+        q_grid[:, :, 1] = jt.float32(
+            jt.array([q_overlap[1] + i * q_overlap[3] / grid for i in range(size)])
         ).view(size, 1)
-        k_grid[:, :, 0] = torch.FloatTensor(
-            [k_overlap[0] + i * k_overlap[2] / grid for i in range(size)]
+        k_grid[:, :, 0] = jt.float32(
+            jt.array([k_overlap[0] + i * k_overlap[2] / grid for i in range(size)])
         ).view(1, size)
-        k_grid[:, :, 1] = torch.FloatTensor(
-            [k_overlap[1] + i * k_overlap[3] / grid for i in range(size)]
+        k_grid[:, :, 1] = jt.float32(
+            jt.array([k_overlap[1] + i * k_overlap[3] / grid for i in range(size)])
         ).view(size, 1)
 
         # flip
@@ -214,7 +226,7 @@ def get_grid(rectq, rectk, size):
 
     else:
         # fill zero
-        q_grid = torch.full(fill_value=-2, size=(size, size, 2), dtype=torch.float32)
-        k_grid = torch.full(fill_value=-2, size=(size, size, 2), dtype=torch.float32)
+        q_grid = jt.full(val=-2, shape=(size, size, 2), dtype='float32')
+        k_grid = jt.full(val=-2, shape=(size, size, 2), dtype='float32')
 
     return q_grid, k_grid

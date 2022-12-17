@@ -1,16 +1,15 @@
 import os
 import argparse
-import torch
-import torch.nn as nn
+import jittor as jt
+import jittor.nn as nn
+jt.flags.use_cuda = 1
 import numpy as np
 from tqdm import tqdm
-import torch.nn.functional as F
-from torchvision import transforms
+import jittor.transform as transforms
 from PIL import Image
 import src.resnet as resnet_model
 from src.singlecropdataset import InferImageFolder
-import torch.multiprocessing as mp
-import torch.distributed as dist
+from src.utils import bool_flag
 
 
 def parse_args():
@@ -24,44 +23,40 @@ def parse_args():
     parser.add_argument("-t", "--threshold", default=0, type=float, help="The threshold to filter the 'others' categroies.")
     parser.add_argument("--test", action='store_true', help="whether to save the logit. Enabled when finding the best threshold.")
     parser.add_argument("--centroid", type=str, default=None, help="The centroids of clustering.")
-    parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up distributed training; see https://pytorch.org/docs/stable/distributed.html""")
-    parser.add_argument("--rank", type=int, default=0)
+    parser.add_argument("--checkpoint_key", type=str, default='state_dict', help="key of model in checkpoint")
+
     args = parser.parse_args()
 
     return args
 
 
-def main_worker(rank, args):
-
-    args.rank = rank 
-    dist.init_process_group(backend='nccl', init_method=args.dist_url, world_size=args.num_gpus,
-                                    rank=args.rank)
-    torch.cuda.set_device(rank)
-    device = torch.device("cuda:{}".format(rank))
+def main_worker(args):
 
     centroids = np.load(args.centroid)
-    centroids = torch.from_numpy(centroids).cuda()
-    centroids = nn.functional.normalize(centroids, dim=1, p=2)
+    centroids = jt.array(centroids)
+    centroids = jt.normalize(centroids, dim=1, p=2)
 
     # build model
-    model = resnet_model.__dict__[args.arch](hidden_mlp=0, output_dim=0, nmb_prototypes=0, train_mode='pixelattn')
+    if 'resnet' in args.arch:
+        model = resnet_model.__dict__[args.arch](hidden_mlp=0, output_dim=0, nmb_prototypes=0, train_mode='pixelattn')
+    else:
+        raise NotImplementedError()
 
-    checkpoint = torch.load(args.pretrained, map_location="cpu")["state_dict"]
-    state_dict = {}
-    for k in checkpoint.keys():
-        if k.startswith("module") and not k.startswith("module.prototypes") and not k.startswith("module.projection"):
-            state_dict[k[len("module.") :]] = checkpoint[k]
-
-    msg = model.load_state_dict(state_dict, strict=False)
+    checkpoint = jt.load(args.pretrained)[args.checkpoint_key]
+    for k in list(checkpoint.keys()):
+        if k.startswith('module.'):
+            checkpoint[k[len('module.'):]] = checkpoint[k]
+            del checkpoint[k]
+            k = k[len('module.'):]
+        if k not in model.state_dict().keys():
+            del checkpoint[k]
+    model.load_state_dict(checkpoint)
     print("=> loaded model '{}'".format(args.pretrained))
-    assert len(msg.missing_keys) == 0, msg.missing_keys
-    model.cuda()
-    model.to(device)
     model.eval()
 
     # build dataset
     data_path = os.path.join(args.data_path, args.mode)
-    normalize = transforms.Normalize(
+    normalize = transforms.ImageNormalize(
         mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
     )
     dataset = InferImageFolder(
@@ -73,44 +68,46 @@ def main_worker(rank, args):
                 normalize,
             ]
         ),
-        rank=rank,
-        num_gpus=args.num_gpus
+        num_gpus=jt.world_size
     )
-    dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=1, num_workers=16, pin_memory=True
+    dataloader = dataset.set_attrs(
+        batch_size=jt.world_size, num_workers=16, drop_last=False, shuffle=False
     )
 
     dump_path = os.path.join(args.dump_path, args.mode)
+
+    if not jt.in_mpi or (jt.in_mpi and jt.rank == 0):
+        for cate in os.listdir(data_path):
+            if not os.path.exists(os.path.join(dump_path, cate)):
+                os.makedirs(os.path.join(dump_path, cate))
 
     for images, path, height, width in tqdm(dataloader):
         path = path[0]
         cate = path.split("/")[-2]
         name = path.split("/")[-1].split(".")[0]
-        if not os.path.exists(os.path.join(dump_path, cate)):
-            os.makedirs(os.path.join(dump_path, cate))
 
-        with torch.no_grad():
+        with jt.no_grad():
             h = height.item()
             w = width.item()
 
-            out, mask = model(images.cuda(device), mode='inference_pixel_attention')
+            out, mask = model(images, mode='inference_pixel_attention')
 
-            mask = F.upsample(mask, (h, w), mode="bilinear", align_corners=False).squeeze()
+            mask = nn.upsample(mask, (h, w), mode="bilinear", align_corners=False).squeeze(0).squeeze(0)
 
-            out = nn.functional.normalize(out, dim=1, p=2)
+            out = jt.normalize(out, dim=1, p=2)
             B, C, H, W = out.shape
             out = out.view(B, C, -1).permute(0, 2, 1).contiguous().view(-1, C)
 
-            cosine = torch.mm(out, centroids.t())
+            cosine = jt.matmul(out, centroids.t())
             cosine = cosine.view(1, H, W, args.num_classes).permute(0, 3, 1, 2)
 
             logit = mask
-            prediction = torch.argmax(cosine, dim=1, keepdim=True) + 1
-            prediction = F.interpolate(prediction.float(), (h, w), mode="nearest").squeeze()
+            prediction = jt.argmax(cosine, dim=1, keepdims=True)[0] + 1
+            prediction = nn.interpolate(prediction.float(), (h, w), mode="nearest").squeeze(0).squeeze(0)
             
-            prediction[logit.squeeze() < args.threshold] = 0
+            prediction[logit < args.threshold] = 0
 
-            res = torch.zeros(size=(prediction.shape[0], prediction.shape[1], 3))
+            res = jt.zeros((prediction.shape[0], prediction.shape[1], 3))
             res[:, :, 0] = prediction % 256
             res[:, :, 1] = prediction // 256
 
@@ -121,13 +118,12 @@ def main_worker(rank, args):
             res.save(os.path.join(dump_path, cate, name + ".png"))
             if args.test:
                 np.save(os.path.join(dump_path, cate, name + ".npy"), logit)
+            
+            jt.clean_graph()
+            jt.sync_all()
+            jt.gc()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    args.num_gpus = torch.cuda.device_count()
-    if args.num_gpus == 1:
-        main_worker(rank=0, args=args)
-    else:
-        torch.multiprocessing.set_start_method('spawn')
-        mp.spawn(main_worker, nprocs=args.num_gpus, args=(args,))
+    main_worker(args=args)

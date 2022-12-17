@@ -3,7 +3,6 @@ import os
 from multiprocessing import Manager, Process
 
 import numpy as np
-import torch
 from tqdm import tqdm
 
 from src.singlecropdataset import EvalDataset
@@ -12,6 +11,19 @@ from src.metric import intersectionAndUnionGPU, fscore, IoUDifferentSizeGPUWithB
 
 NUM_THREADS = 24
 manager = Manager()
+
+
+def get_dataset(args, mode, threshold=None, match=None):
+    gt_path = os.path.join(args.data_path, f'{mode}-segmentation')
+    predict_path = os.path.join(args.predict_path, mode)
+    dataset = EvalDataset(predict_path, gt_path, threshold=threshold, match=match)
+    dataset.set_attrs(
+        batch_size=1,
+        shuffle=False,
+        num_workers=args.workers,
+        drop_last=False,
+    )
+    return dataset
 
 
 def func_hungarian(i, targets, predictions, thresholds, matches, num_classes):
@@ -23,7 +35,8 @@ def func_hungarian(i, targets, predictions, thresholds, matches, num_classes):
         matches[thresholds[j]] = match
 
 
-def match(loader, num_classes, threshold):
+def match(args, mode, num_classes, threshold):
+    loader = get_dataset(args, mode)
     if isinstance(threshold, float):
         threshold = [threshold]
 
@@ -31,21 +44,21 @@ def match(loader, num_classes, threshold):
     targets = []
     for target, _, predict, _, logit in tqdm(loader):
 
-        target = target.cuda()
-        predict = predict.cuda()
+        target = target.numpy()
+        predict = predict.numpy()
 
-        target = torch.unique(target.view(-1))
+        target = np.unique(target.reshape(-1))
         target = target - 1
         target = target.tolist()
         if -1 in target:
             target.remove(-1)
         targets.append(target)
-        logit = logit.cuda()
+        logit = logit.numpy()
         for t in threshold:
-            predict_ = predict.clone()
+            predict_ = predict.copy()
             predict_[logit < t] = 0
 
-            predict_ = torch.unique(predict_.view(-1))
+            predict_ = np.unique(predict_.reshape(-1))
             predict_ = predict_ - 1
             predict_ = predict_.tolist()
             if -1 in predict_:
@@ -68,51 +81,50 @@ def match(loader, num_classes, threshold):
     return match
 
 
-def evaluator(loader, num_classes, thresholds, matches):
+def evaluator(args, mode, num_classes, thresholds, matches):
     assert thresholds is not None
     if isinstance(thresholds, float):
         thresholds = [thresholds]
 
     logs = []
     for t in thresholds:
-        T = torch.zeros(size=(num_classes + 1, )).cuda()
-        P = torch.zeros(size=(num_classes + 1, )).cuda()
-        TP = torch.zeros(size=(num_classes + 1, )).cuda()
-        BT = torch.zeros(size=(num_classes + 1,)).cuda()
-        BP = torch.zeros(size=(num_classes + 1,)).cuda()
-        BTP = torch.zeros(size=(num_classes + 1,)).cuda()
-        IoU = torch.zeros(size=(num_classes + 1, )).cuda()
+        T = np.zeros((num_classes + 1, ))
+        P = np.zeros((num_classes + 1, ))
+        TP = np.zeros((num_classes + 1, ))
+        BT = np.zeros((num_classes + 1,))
+        BP = np.zeros((num_classes + 1,))
+        BTP = np.zeros((num_classes + 1,))
+        IoU = np.zeros((num_classes + 1, ))
         FMeasure = 0.0
         ACC = 0.0
 
         # mIoUs under different object sizes
-        Ts = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
-        Ps = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
-        TPs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
-        mIoUs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        Ts = [np.zeros((num_classes + 1,)) for _ in range(4)]
+        Ps = [np.zeros((num_classes + 1,)) for _ in range(4)]
+        TPs = [np.zeros((num_classes + 1,)) for _ in range(4)]
+        mIoUs = [np.zeros((num_classes + 1,)) for _ in range(4)]
         # bIoUs under different object sizes
-        BTs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
-        BPs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
-        BTPs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
-        mBIoUs = [torch.zeros(size=(num_classes + 1,)).cuda() for _ in range(4)]
+        BTs = [np.zeros((num_classes + 1,)) for _ in range(4)]
+        BPs = [np.zeros((num_classes + 1,)) for _ in range(4)]
+        BTPs = [np.zeros((num_classes + 1,)) for _ in range(4)]
+        mBIoUs = [np.zeros((num_classes + 1,)) for _ in range(4)]
 
-        loader.dataset.threshold = t
-        loader.dataset.match = matches[t]
+        loader = get_dataset(args, mode, threshold=t, match=matches[t])
         for target, boundary_target, predict, boundary_predict, _ in tqdm(loader):
-            target = target.cuda()
-            predict = predict.cuda()
-            boundary_target = boundary_target.cuda()
-            boundary_predict = boundary_predict.cuda()
+            target = target.numpy()
+            predict = predict.numpy()
+            boundary_target = boundary_target.numpy()
+            boundary_predict = boundary_predict.numpy()
 
             area_intersection, area_output, area_target = \
                 intersectionAndUnionGPU(
-                    predict.view(-1), target.view(-1), num_classes + 1)
+                    predict.reshape(-1), target.reshape(-1), num_classes + 1)
             
             area_intersection_boundary, area_output_boundary, area_target_boundary = \
                 intersectionAndUnionGPU(
-                    boundary_predict.view(-1), boundary_target.view(-1), num_classes + 2)
+                    boundary_predict.reshape(-1), boundary_target.reshape(-1), num_classes + 2)
             
-            IoUDifferentSizeGPUWithBoundary(predict.view(-1), target.view(-1), boundary_predict.view(-1), boundary_target.view(-1), num_classes + 1, Ts, Ps, TPs, BTs, BPs, BTPs)
+            IoUDifferentSizeGPUWithBoundary(predict.reshape(-1), target.reshape(-1), boundary_predict.reshape(-1), boundary_target.reshape(-1), num_classes + 1, Ts, Ps, TPs, BTs, BPs, BTPs)
 
             f_score = fscore(predict, target)
 
@@ -124,18 +136,18 @@ def evaluator(loader, num_classes, thresholds, matches):
             BTP += area_intersection_boundary[1:]
             FMeasure += f_score
 
-            img_label = torch.argmax(area_output[1:]) + 1
+            img_label = np.argmax(area_output[1:]) + 1
             ACC += (area_target[img_label] > 0) * (area_output[img_label] > 0)
 
         IoU = TP / (T + P - TP + 1e-10)
         BIoU = BTP / (BT + BP - BTP + 1e-10)
-        mIoU = torch.mean(IoU).item() * 100
-        mBIoU = torch.mean(BIoU).item() * 100
+        mIoU = np.mean(IoU).item() * 100
+        mBIoU = np.mean(BIoU).item() * 100
         FMeasure = FMeasure.item() / len(loader.dataset) * 100
         ACC = ACC.item() * 100 / len(loader.dataset)
 
-        for i in range(4): mIoUs[i] = torch.mean((TPs[i] / (Ts[i] + Ps[i] - TPs[i] + 1e-10))[Ps[i] > 0]).item() * 100
-        for i in range(4): mBIoUs[i] = torch.mean((BTPs[i] / (BTs[i] + BPs[i] - BTPs[i] + 1e-10))[BPs[i] > 0]).item() * 100
+        for i in range(4): mIoUs[i] = np.mean((TPs[i] / (Ts[i] + Ps[i] - TPs[i] + 1e-10))[Ps[i] > 0]).item() * 100
+        for i in range(4): mBIoUs[i] = np.mean((BTPs[i] / (BTs[i] + BPs[i] - BTPs[i] + 1e-10))[BPs[i] > 0]).item() * 100
 
         print(
             'Threshold: {:.2f}\tAcc: {:.2f}\tmIoU: {:.2f}\tmBIoU: {:.2f}\tFMeasure: {:.2f}\t'\
@@ -169,28 +181,15 @@ def evaluator(loader, num_classes, thresholds, matches):
 
 def evaludation(args, mode):
 
-    # dataloader
-    gt_path = os.path.join(args.data_path, f'{mode}-segmentation')
-    predict_path = os.path.join(args.predict_path, mode)
-    dataset = EvalDataset(predict_path, gt_path)
-    loader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=1,
-        shuffle=False,
-        num_workers=args.workers,
-        pin_memory=False,
-        drop_last=False,
-    )
-
     if args.curve:
         thresholds = [
             threshold / 100.0 for threshold in range(args.min, args.max + 1)
         ]
     else:
         thresholds = [args.t / 100.0]
-    matches = match(loader, args.num_classes, threshold=thresholds)
+    matches = match(args, mode, args.num_classes, threshold=thresholds)
     log = evaluator(
-        loader,
+        args, mode,
         num_classes=args.num_classes,
         thresholds=thresholds,
         matches=matches,

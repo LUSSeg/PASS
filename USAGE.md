@@ -35,7 +35,6 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --freeze_prototypes_niters ${FREEZE_PROTOTYPES} \
 --wd 0.000001 \
 --warmup_epochs 0 \
---use_fp16 true \
 --sync_bn pytorch \
 --workers 10 \
 --dist_url ${DIST_URL} \
@@ -72,7 +71,6 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --freeze_prototypes_niters ${FREEZE_PROTOTYPES_PIXELATT} \
 --wd 0.000001 \
 --warmup_epochs 0 \
---use_fp16 true \
 --sync_bn pytorch \
 --workers 10 \
 --dist_url ${DIST_URL} \
@@ -145,7 +143,6 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --final_lr 0.0006 \
 --wd 0.000001 \
 --warmup_epochs 0 \
---use_fp16 true \
 --sync_bn pytorch \
 --workers 8 \
 --dist_url ${DIST_URL} \
