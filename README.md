@@ -1,4 +1,4 @@
-# PASS method for LUSS task
+# PASS method for LUSS task （Jittor version）
 	
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/large-scale-unsupervised-semantic/unsupervised-semantic-segmentation-on-4)](https://paperswithcode.com/sota/unsupervised-semantic-segmentation-on-4?p=large-scale-unsupervised-semantic)
 
@@ -8,7 +8,7 @@
 	
 [![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/large-scale-unsupervised-semantic/unsupervised-semantic-segmentation-on-6)](https://paperswithcode.com/sota/unsupervised-semantic-segmentation-on-6?p=large-scale-unsupervised-semantic)
 
-[**Jittor Version**](https://github.com/LUSSeg/PASS/jittor) is coming very soon!
+
 
 ## Introduction
 ![image](https://user-images.githubusercontent.com/20515144/196449430-5ac6a88c-24ea-4a82-8a45-cd244aeb0b3b.png)
