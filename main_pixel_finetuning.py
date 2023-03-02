@@ -22,7 +22,7 @@ from options import getOption
 from src.singlecropdataset import PseudoLabelDataset
 from src.utils import (AverageMeter, accuracy, fix_random_seeds,
                        initialize_exp,
-                       restart_from_checkpoint, param_groups_lrd)
+                       restart_from_checkpoint)
 
 logger = getLogger()
 parser = getOption()
