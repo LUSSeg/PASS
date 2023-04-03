@@ -1,24 +1,51 @@
 # Usage of PASS
-[Training](#1)
+[Installation](#1)
 
-[Evaluation](#2)
+[Training](#2)
+
+[Evaluation](#3)
 
 <div id="1"></div>
 
+# Installation
+PASS environment requirements:
+
+* System: **Linux**(e.g. Ubuntu/CentOS/Arch), **macOS**, or **Windows Subsystem of Linux (WSL)**
+* Python version >= 3.7
+* CPU compiler (require at least one of the following)
+    * g++ (>=5.4.0)
+    * clang (>=8.0)
+
+## Step 1: Install Jittor
+You can refer to the following [Jittor install](https://github.com/Jittor/jittor#install)
+
+## Step 2: Install Requirements
+```shell
+python -m pip install scikit-learn
+python -m pip install pandas
+python -m pip install munkres
+python -m pip install tqdm
+python -m pip install pillow
+python -m pip install opencv-python
+pytthon -m pip install faiss-gpu
+```
+
+
+
 # Training
 
-In the following, we explain the function of each part in the training scripts, i.e., **[LUSS50](scripts/luss50_pass.sh)**,  **[LUSS300](scripts/luss300_pass.sh)** and  **[LUSS919](scripts/luss919_pass.sh)**.
+In the following, we explain the function of each part in the training scripts, i.e., **[LUSS50](scripts/luss50_pass_jt.sh)**.
 ## Step 1: Unsupervised representation learning
 We conduct pretraining with our proposed Non-contrastive pixel-to-pixel representation alignment and Deep-to-shallow supervision.
 ```shell
-CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node=${N_GPU} main_pretrain.py \
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python main_pretrain.py \
 --arch ${ARCH} \
 --data_path ${DATA}/train \
 --dump_path ${DUMP_PATH} \
---nmb_crops 2 \
---size_crops 224 \
---min_scale_crops 0.08 \
---max_scale_crops 1.0 \
+--nmb_crops 2 6 \
+--size_crops 224 96 \
+--min_scale_crops 0.14 0.05 \
+--max_scale_crops 1. 0.14 \
 --crops_for_assign 0 1 \
 --temperature 0.1 \
 --epsilon 0.05 \
@@ -35,10 +62,8 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --freeze_prototypes_niters ${FREEZE_PROTOTYPES} \
 --wd 0.000001 \
 --warmup_epochs 0 \
---sync_bn pytorch \
 --workers 10 \
---dist_url ${DIST_URL} \
---seed 10010 \
+--seed 31 \
 --shallow 3 \
 --weights 1 1
 ```
@@ -47,7 +72,8 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 ### Step 2.1: Finetuning pixel attention
 In this part, you should set the `--pretrained` as the pretrained weights obtained in step 1.
 ```shell
-CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node=${N_GPU} main_pixel_attention.py \
+
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python main_pixel_attention.py \
 --arch ${ARCH} \
 --data_path ${IMAGENETS}/train \
 --dump_path ${DUMP_PATH_FINETUNE} \
@@ -66,15 +92,13 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --epoch_queue_starts 0 \
 --epochs ${EPOCH_PIXELATT} \
 --batch_size ${BATCH} \
---base_lr 0.6 \
+--base_lr 6.0 \
 --final_lr 0.0006  \
 --freeze_prototypes_niters ${FREEZE_PROTOTYPES_PIXELATT} \
 --wd 0.000001 \
 --warmup_epochs 0 \
---sync_bn pytorch \
 --workers 10 \
---dist_url ${DIST_URL} \
---seed 10010 \
+--seed 31 \
 --pretrained ${DUMP_PATH}/checkpoint.pth.tar
 ```
 
@@ -102,7 +126,6 @@ CUDA_VISIBLE_DEVICES=${CUDA} python inference_pixel_attention.py -a ${ARCH} \
 --dump_path ${DUMP_PATH_FINETUNE} \
 -c ${NUM_CLASSES} \
 --mode validation \
---dist_url ${DIST_URL} \
 --test \
 --centroid ${DUMP_PATH_FINETUNE}/cluster/centroids.npy
 
@@ -112,28 +135,27 @@ CUDA_VISIBLE_DEVICES=${CUDA} python evaluator.py \
 -c ${NUM_CLASSES} \
 --mode validation \
 --curve \
---min 0 \
+--min 20 \
 --max 80
 ```
 
 ### Step 2.4: Generating pseudo-labels for the training set
 Please set the `t` as the best threshold obtained in step 2.3.
 ```shell
-CUDA_VISIBLE_DEVICES=${CUDA} python inference_pixel_attention.py -a ${ARCH} \
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python inference_pixel_attention.py -a ${ARCH} \
 --pretrained ${DUMP_PATH_FINETUNE}/checkpoint.pth.tar \
 --data_path ${IMAGENETS} \
 --dump_path ${DUMP_PATH_FINETUNE} \
 -c ${NUM_CLASSES} \
 --mode train \
 --centroid ${DUMP_PATH_FINETUNE}/cluster/centroids.npy \
---dist_url ${DIST_URL} \
--t 0.37
+-t 0.26
 ```
 
 ## Step 3: Finetuning with pixel-level pseudo labels
 Please set the `pseudo_path` as the path that saves pseudo-labels generated in step 2.4.
 ```shell
-CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node=${N_GPU} main_pixel_finetuning.py \
+CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python main_pixel_finetuning.py \
 --arch ${ARCH} \
 --data_path ${DATA}/train \
 --dump_path ${DUMP_PATH_SEG} \
@@ -143,9 +165,7 @@ CUDA_VISIBLE_DEVICES=${CUDA} python -m torch.distributed.launch --nproc_per_node
 --final_lr 0.0006 \
 --wd 0.000001 \
 --warmup_epochs 0 \
---sync_bn pytorch \
 --workers 8 \
---dist_url ${DIST_URL} \
 --num_classes ${NUM_CLASSES} \
 --pseudo_path ${DUMP_PATH_FINETUNE}/train \
 --pretrained ${DUMP_PATH}/checkpoint.pth.tar
@@ -159,7 +179,6 @@ CUDA_VISIBLE_DEVICES=${CUDA} python inference.py -a ${ARCH} \
 --data_path ${IMAGENETS} \
 --dump_path ${DUMP_PATH_SEG} \
 -c ${NUM_CLASSES} \
---dist_url ${DIST_URL} \
 --mode validation \
 --match_file ${DUMP_PATH_SEG}/validation/match.json
 ```
@@ -176,14 +195,3 @@ CUDA_VISIBLE_DEVICES=${CUDA} python evaluator.py \
 -c ${NUM_CLASSES} \
 --mode validation
 ```
-
-## Distance matching protocol
-```shell
-bash distance_matching/distance_matching.sh [arch, e.g., resnet50] \
-[path to pretrained model] \
-[path to save segmentation mask] \
-[path to datasets, e.g., /data/ImageNetS/ImageNetS{50/300/919}] \
-[number of classes, e.g., 50 300 and 919] \
-[validation | test]
-```
-On test set, the code will generate a zip file, which could be submitted to the [online server](https://lusseg.github.io/).

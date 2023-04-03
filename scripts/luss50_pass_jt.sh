@@ -1,13 +1,12 @@
-CUDA='0,1,2,3,4,5,6,7'
-N_GPU=8
-BATCH=256
+CUDA='0,1,2,3'
+N_GPU=4
+BATCH=64
 DATA=/data/ImageNetS/ImageNetS50
 IMAGENETS=/data/ImageNetS/ImageNetS50
 
 DUMP_PATH=./weights/pass50
 DUMP_PATH_FINETUNE=${DUMP_PATH}/pixel_attention
 DUMP_PATH_SEG=${DUMP_PATH}/pixel_finetuning
-DIST_URL='tcp://localhost:10001'
 QUEUE_LENGTH=2048
 QUEUE_LENGTH_PIXELATT=3840
 HIDDEN_DIM=512
