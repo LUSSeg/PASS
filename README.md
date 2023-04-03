@@ -42,20 +42,20 @@ We give the training and inference details in **[USAGE](USAGE.md)**.
 <td align="center">11.4</td>
 <td align="center">10.3</td>
 <td align="center"><a href="scripts/luss919_pass_jt.sh">bash</a></td>
-<td align="center"><a href="">model</a></td>
-<td align="center"><a href="">model</a></td>
-<td align="center"><a href="">centroid</a></td>
-<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
 </tr>
 <td align="left">ImageNet-S 300</td>
 <td align="center">ResNet50</td>
 <td align="center">17.8</td>
 <td align="center">17.4</td>
 <td align="center"><a href="scripts/luss300_pass_jt.sh">bash</a></td>
-<td align="center"><a href="">model</a></td>
-<td align="center"><a href="">model</a></td>
-<td align="center"><a href="">centroid</a></td>
-<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
 </tr>
 </tr>
 <td align="left">ImageNet-S 50</td>
@@ -63,10 +63,10 @@ We give the training and inference details in **[USAGE](USAGE.md)**.
 <td align="center">29.2</td>
 <td align="center">29.8</td>
 <td align="center"><a href="scripts/luss50_pass_jt.sh">bash</a></td>
-<td align="center"><a href="">model</a></td>
-<td align="center"><a href="">model</a></td>
-<td align="center"><a href="">centroid</a></td>
-<td align="center"><a href="">model</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
+<td align="center"><a href="">-</a></td>
 </tr>
 </tbody></table>
 
