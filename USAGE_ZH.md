@@ -33,7 +33,7 @@ python -m pip install faiss-gpu
 
 
 # 训练
-在下文中，解释了训练脚本中每个部分的功能，即[LUSS50](scripts/luss50_pass_jt.sh)。
+我们提供了训练脚本[luss50_pass_jt.sh](scripts/luss50_pass_jt.sh)，下文解释了训练脚本中每个部分的功能。
 
 ## 步骤1：无监督的表征学习
 首先进行非对比像素到像素表示对齐和深度到浅层监督进行预训练。
