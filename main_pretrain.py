@@ -101,7 +101,8 @@ def main():
         queue = jt.load(queue_path)["queue"]
     # the queue needs to be divisible by the batch size
     args.queue_length -= args.queue_length % (args.batch_size * jt.world_size)
-
+    if queue is not None and not isinstance(queue, jt.Var):
+        queue = jt.Var(queue)
     for epoch in range(start_epoch, args.epochs):
 
         # train the network for one epoch
