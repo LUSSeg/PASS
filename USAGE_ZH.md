@@ -170,7 +170,7 @@ CUDA_VISIBLE_DEVICES=${CUDA} mpirun -np ${N_GPU} --allow-run-as-root python main
 --pretrained ${DUMP_PATH}/checkpoint.pth.tar
 ```
 
-## 第4步：推理
+## 步骤4：推理
 如果想评估测试集的性能，请将“mode”设置为“test”，从而生成对应的标签。
 ```shell
 CUDA_VISIBLE_DEVICES=${CUDA} python inference.py -a ${ARCH} \
