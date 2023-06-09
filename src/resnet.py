@@ -153,7 +153,7 @@ class Mulpixelattn(nn.Module):
             nn.Conv2d(hidden_mlp, channels, 1),
             nn.BatchNorm2d(channels, affine=True),
         )
-        self.threshold = jt.zeros((1, channels, 1, 1))
+        self.threshold = jt.nn.Parameter(jt.zeros((1, channels, 1, 1)))
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
 
     def execute(self, x):
