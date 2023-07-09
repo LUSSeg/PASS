@@ -27,7 +27,7 @@ python -m pip install munkres
 python -m pip install tqdm
 python -m pip install pillow
 python -m pip install opencv-python
-pytthon -m pip install faiss-gpu
+python -m pip install faiss-gpu
 ```
 
 
